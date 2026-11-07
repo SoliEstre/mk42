@@ -1,0 +1,194 @@
+{
+  "name": "mark42",
+  "displayName": "Mark42",
+  "description": "%description%",
+  "version": "0.1.0",
+  "publisher": "mark42",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "vscode": "^1.100.0" },
+  "main": "./dist/extension.cjs",
+  "l10n": "./l10n",
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "%untrustedWorkspaces.description%",
+      "restrictedConfigurations": [
+        "mark42.role",
+        "mark42.slotId",
+        "mark42.folderPath",
+        "mark42.pipeName",
+        "mark42.daemonPath",
+        "mark42.nodePath",
+        "mark42.trustedHomes",
+        "mark42.autoSend",
+        "mark42.sender"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "package": "node build.mjs && node package-vsix.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Mark42",
+      "properties": {
+        "mark42.role": {
+          "type": "string",
+          "enum": ["", "hub", "agent-claude", "agent-codex", "editor"],
+          "default": "",
+          "scope": "window",
+          "markdownDescription": "%config.role.description%"
+        },
+        "mark42.slotId": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "%config.slotId.description%"
+        },
+        "mark42.folderPath": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "%config.folderPath.description%"
+        },
+        "mark42.autoSend": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "%config.autoSend.description%"
+        },
+        "mark42.sender": {
+          "type": "string",
+          "enum": ["osKeys", "none"],
+          "enumDescriptions": ["%config.sender.osKeys%", "%config.sender.none%"],
+          "default": "osKeys",
+          "scope": "window",
+          "description": "%config.sender.description%"
+        },
+        "mark42.pipeName": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "%config.pipeName.description%"
+        },
+        "mark42.trustedHomes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "scope": "application",
+          "markdownDescription": "%config.trustedHomes.description%"
+        },
+        "mark42.daemonPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "%config.daemonPath.description%"
+        },
+        "mark42.nodePath": {
+          "type": "string",
+          "default": "node",
+          "scope": "machine",
+          "description": "%config.nodePath.description%"
+        },
+        "mark42.virtualDocPlacement": {
+          "type": "string",
+          "enum": ["agentWindow", "auxWindow"],
+          "enumDescriptions": ["%config.virtualDocPlacement.agentWindow%", "%config.virtualDocPlacement.auxWindow%"],
+          "default": "agentWindow",
+          "scope": "window",
+          "description": "%config.virtualDocPlacement.description%"
+        }
+      }
+    },
+    "commands": [
+      { "command": "mark42.reloadWindow", "title": "%command.reloadWindow%", "category": "Mark42", "icon": "$(refresh)" },
+      { "command": "mark42.restartExtensionHost", "title": "%command.restartExtensionHost%", "category": "Mark42", "icon": "$(debug-restart)" },
+      { "command": "mark42.selectTheme", "title": "%command.selectTheme%", "category": "Mark42", "icon": "$(symbol-color)" },
+      { "command": "mark42.maximizeAgentPanel", "title": "%command.maximizeAgentPanel%", "category": "Mark42", "icon": "$(screen-full)" },
+      { "command": "mark42.addFolder", "title": "%command.addFolder%", "category": "Mark42", "icon": "$(new-folder)" },
+      { "command": "mark42.openHub", "title": "%command.openHub%", "category": "Mark42", "icon": "$(home)" },
+      { "command": "mark42.openAgentSession", "title": "%command.openAgentSession%", "category": "Mark42" },
+      { "command": "mark42.openLinkInEditor", "title": "%command.openLinkInEditor%", "category": "Mark42" },
+      { "command": "mark42.smoke", "title": "%command.smoke%", "category": "Mark42" },
+      { "command": "mark42.daemonStatus", "title": "%command.daemonStatus%", "category": "Mark42" },
+      { "command": "mark42.refreshSessions", "title": "%command.refreshSessions%", "category": "Mark42", "icon": "$(refresh)" },
+      { "command": "mark42.openSessionItem", "title": "%command.openSessionItem%", "category": "Mark42" },
+      { "command": "mark42.agentUpdate.check", "title": "%command.agentUpdate.check%", "category": "Mark42", "icon": "$(cloud-download)" },
+      { "command": "mark42.agentUpdate.reload", "title": "%command.agentUpdate.reload%", "category": "Mark42", "icon": "$(debug-restart)" },
+      { "command": "mark42.agentUpdate.apply", "title": "%command.agentUpdate.apply%", "category": "Mark42", "icon": "$(arrow-circle-up)" },
+      { "command": "mark42.agentUpdate.unverified", "title": "%command.agentUpdate.unverified%", "category": "Mark42", "icon": "$(warning)" },
+      { "command": "mark42.update.check", "title": "%command.update.check%", "category": "Mark42", "icon": "$(cloud-download)" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "mark42.openAgentSession", "when": "false" },
+        { "command": "mark42.openLinkInEditor", "when": "false" },
+        { "command": "mark42.openSessionItem", "when": "false" }
+      ],
+      "view/title": [
+        { "command": "mark42.reloadWindow", "when": "view == mark42.sessions", "group": "navigation@1" },
+        { "command": "mark42.restartExtensionHost", "when": "view == mark42.sessions", "group": "navigation@2" },
+        { "command": "mark42.selectTheme", "when": "view == mark42.sessions", "group": "navigation@3" },
+        { "command": "mark42.refreshSessions", "when": "view == mark42.sessions", "group": "navigation@4" },
+        { "command": "mark42.openHub", "when": "view == mark42.sessions", "group": "overflow@1" },
+        { "command": "mark42.addFolder", "when": "view == mark42.sessions", "group": "overflow@2" },
+        {
+          "command": "mark42.agentUpdate.check",
+          "when": "(view == claudeVSCodeSidebarSecondary || view == claudeVSCodeSidebar || view == chatgpt.sidebarSecondaryView || view == chatgpt.sidebarView) && mark42.agentWindow && !mark42.agentUpdateReady && !mark42.agentUpdateUnverified",
+          "group": "navigation@90"
+        },
+        {
+          "command": "mark42.agentUpdate.apply",
+          "when": "(view == claudeVSCodeSidebarSecondary || view == claudeVSCodeSidebar || view == chatgpt.sidebarSecondaryView || view == chatgpt.sidebarView) && mark42.agentWindow && mark42.agentUpdateReady",
+          "group": "navigation@90"
+        },
+        {
+          "command": "mark42.agentUpdate.reload",
+          "when": "(view == claudeVSCodeSidebarSecondary || view == claudeVSCodeSidebar || view == chatgpt.sidebarSecondaryView || view == chatgpt.sidebarView) && mark42.agentWindow",
+          "group": "navigation@91"
+        },
+        {
+          "command": "mark42.agentUpdate.unverified",
+          "when": "(view == claudeVSCodeSidebarSecondary || view == claudeVSCodeSidebar || view == chatgpt.sidebarSecondaryView || view == chatgpt.sidebarView) && mark42.agentWindow && !mark42.agentUpdateReady && mark42.agentUpdateUnverified",
+          "group": "navigation@90"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [{ "id": "mark42", "title": "Mark42", "icon": "$(layers)" }]
+    },
+    "views": {
+      "mark42": [{ "id": "mark42.sessions", "name": "%view.sessions%", "type": "tree" }],
+      "claude-sidebar-secondary": [
+        {
+          "id": "mark42.tasks.claude",
+          "type": "webview",
+          "name": "%view.tasks%",
+          "visibility": "collapsed",
+          "when": "mark42.agentWindow && mark42.agentKind == claude"
+        }
+      ],
+      "codexSecondaryViewContainer": [
+        {
+          "id": "mark42.tasks.codex",
+          "type": "webview",
+          "name": "%view.tasks%",
+          "visibility": "collapsed",
+          "when": "mark42.agentWindow && mark42.agentKind == codex"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@mark42/protocol": "*"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.100.0"
+  }
+}

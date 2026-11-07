@@ -1,0 +1,462 @@
+// hub UI 글 번역(en 기본·ko). WebView2·Edge는 Windows 표시 언어를 navigator.languages로 넘겨줘요.
+// 화면 글만 옮겨요. 세션 제목·경로·프로토콜 값 같은 데이터는 그대로 둬요.
+
+export type Lang = 'en' | 'ko';
+
+const en = {
+  // 골격·부팅
+  'app.title': 'Mk42 Hub',
+  'app.brandSub': 'Hub',
+  'boot.noWebviewApi': 'VS Code webview API not found.',
+
+  // 연결
+  'conn.connected': 'Connected',
+  'conn.connecting': 'Connecting',
+  'conn.authFailed': 'Auth failed',
+  'conn.superseded': 'Opened in another window',
+  'conn.disconnected': 'Disconnected',
+  'conn.reconnectNow': 'Reconnect now',
+  'conn.detail.connected': 'Connected to the daemon',
+  'conn.detail.waitingHost': 'Waiting for the extension host',
+  'conn.detail.webviewDisconnected': 'Lost the daemon connection. The extension is reconnecting',
+  'conn.detail.connecting': 'Connecting to the daemon',
+  'conn.detail.authFailed': 'The access token does not match. Reopen the hub window from the daemon',
+  'conn.detail.superseded': 'A newer hub window took over, so this one is idle. You can close it',
+  'conn.detail.disconnected': 'Lost the daemon connection. Reconnecting',
+  'conn.detail.noToken': 'No access token. Reopen the hub window from the daemon',
+  'conn.detail.retryIn': 'Lost the daemon connection. Reconnecting in {0} s',
+
+  // 툴바
+  'toolbar.reloadWindow': 'Reload Window',
+  'toolbar.restartExtensionHost': 'Reload Extensions',
+  'toolbar.theme': 'Theme',
+
+  // 탭
+  'tabs.label': 'Hub views',
+  'tabs.pinned': 'Pinned',
+  'tabs.folders': 'Folders',
+  'tabs.tasks': 'Tasks',
+
+  // 불러오기
+  'loading.connected': 'Loading…',
+  'loading.waiting': 'Will load once connected to the daemon.',
+
+  // 공통
+  'common.expand': 'Expand',
+  'common.collapse': 'Collapse',
+
+  // 고정 세션
+  'pinned.autostart': 'Run when the computer starts',
+  'pinned.autostartTask': 'Task Scheduler: {0}',
+  'pinned.searchPlaceholder': 'Search pinned sessions — title, folder, group, session ID',
+  'pinned.searchLabel': 'Search pinned sessions',
+  'pinned.groupBy': 'Group by',
+  'pinned.resumeAllTitle': 'Resume the enabled pinned sessions now',
+  'pinned.resumeAll': 'Resume all now',
+  'pinned.empty': 'Press ☆ on a session row to pin it. Pinned sessions resume automatically at boot.',
+  'pinned.noMatch': 'No matching pinned sessions.',
+  'pinned.searchExpanded': 'Everything is expanded while searching',
+  'pinned.openEditorTitle': '{0} — open editor window',
+  'pinned.openEditor': 'Open editor window',
+  'pinned.resumeGroupTitle': 'Resume the pinned sessions in this group now',
+  'pinned.resumeGroup': 'Resume group',
+  'pinned.openWindowTitle': '{0} — open window',
+  'pinned.myGroup': 'My group',
+  'pinned.up': 'Move up',
+  'pinned.down': 'Move down',
+  'pinned.resumeNow': 'Resume now',
+  'pinned.unpin': 'Unpin',
+  'pinned.unpinConfirm': 'Unpin?',
+  'pinned.groupNone': 'None',
+  'pinned.bootResumeTitle': 'Resume automatically at boot',
+  'pinned.bootResume': 'Resume at boot',
+  'pinned.autoSendTitle': 'When off, the prompt is only filled in',
+  'pinned.autoSend': 'Auto-send',
+  'pinned.groupFieldTitle': 'Group name used when grouping by «My groups» (empty = no group)',
+  'pinned.groupField': 'Group',
+  'pinned.resumePrompt': 'Resume prompt',
+  'pinned.resetPrompt': 'Reset to default',
+  'pinned.noGroup': 'No group',
+  'pinnedGroupBy.none': 'No grouping',
+  'pinnedGroupBy.folder': 'By folder',
+  'pinnedGroupBy.agent': 'By agent',
+  'pinnedGroupBy.group': 'My groups',
+
+  // 세션 설정
+  'settings.unchanged': '(unchanged)',
+  'settings.modelRestored': 'The model is restored from the conversation history',
+  'settings.model': 'Model',
+  'settings.reasoningEffort': 'Reasoning effort',
+
+  // 폴더·세션
+  'folders.searchPlaceholder': 'Search sessions — title, last prompt',
+  'folders.searchLabel': 'Search sessions',
+  'folders.add': 'Add folder',
+  'folders.pathPlaceholder': 'Folder path or git repository URL (e.g. C:\\Dev\\project, https://github.com/owner/repo)',
+  'folders.pathLabel': 'Folder path to add, or git repository URL to clone',
+  'folders.pickTitle': 'Choose a folder to add. If the field holds a git repository URL, choose where to clone it; it is cloned and then added.',
+  'folders.pick': 'Choose folder…',
+  'folders.pickDialogTitle': 'Folder to add to Mark42',
+  'folders.empty': 'No folders yet. Use «Add folder» to add a project folder.',
+  'folders.matches': '{0} matches',
+  'folders.noResults': 'No search results.',
+  'folders.windowsBadge': 'Windows {0}',
+  'folders.newClaude': 'New Claude Code session window',
+  'folders.newCodex': 'New Codex session window',
+  'folders.editorTitle': 'Editor window for this folder',
+  'folders.editor': 'Editor',
+  'folders.remove': 'Remove',
+  'folders.removeConfirm': 'Remove?',
+  'folders.sessionListError': 'Session list: {0}',
+  'clone.needPicker': 'To choose a clone location, open this in the Mk42 hub window that can pick folders (latest mk42-hub.exe).',
+  'clone.pickTitle': 'Clone location — a «{0}» folder will be created under this folder',
+  'clone.cloning': 'Cloning: {0} …',
+  'clone.done': 'Cloned and added: {0}',
+  'clone.badUrl': 'This cannot be used as a git repository URL (https://, ssh://, git://, user@host:path — without passwords or tokens).',
+  'sessions.treeLabel': '{0} sessions',
+  'sessions.none': 'No sessions',
+  'sessions.showMore': 'Show {0} more',
+  'sessions.subagentCount': '{0} subagents',
+  'sessions.subagent': 'Subagent',
+  'sessions.pinTitle': 'Pin — resume automatically at boot',
+  'sessions.pin': 'Pin',
+
+  // 세션 상태
+  'status.busy': 'Working',
+  'status.waiting': 'Waiting for input',
+  'status.idle': 'Idle',
+  'status.stopped': 'Stopped',
+
+  // 창
+  'role.hub': 'Hub',
+  'role.editor': 'Editor',
+  'windows.open': 'Open windows: {0}',
+  'windows.none': 'No open windows',
+
+  // 작업
+  'tasks.hint': 'Workflows and subagents of Claude Code and Codex sessions — last 12 hours, running sessions first.',
+  'tasks.refreshTitle': 'Reload the task list now',
+  'tasks.refresh': 'Refresh',
+  'tasks.runningCount': '{0} running tasks',
+  'tasks.empty': 'No workflows or subagents ran in the last 12 hours.',
+  'tasks.tokens': '{0} tokens',
+  'tasks.sinceStart': 'Running for',
+  'tasks.elapsed': 'Elapsed',
+  'tasks.running': '⟳ {0} running',
+  'tasks.overallProgress': 'Overall progress',
+  'tasks.subagents': 'Subagents {0}',
+  'tasks.none': 'No tasks',
+  'tasks.workflow': 'Workflow',
+  'tasks.workflowProgress': 'Workflow progress',
+  'tasks.phases': 'Phases',
+  'tasks.phase': 'Phase',
+  'tasks.phaseTitle': '{0} — started {1} · done {2}',
+  'tasks.noAgents': 'No agents started yet',
+  'tasks.kind': 'Kind',
+  'tasks.summary': 'Result summary',
+  'tasks.oldDaemon': 'This daemon does not know the task list yet — restart the daemon with a newer version to see it.',
+  'taskStatus.running': 'Running',
+  'taskStatus.done': 'Done',
+  'taskStatus.failed': 'Failed',
+  'taskStatus.stale': 'Stalled (no activity and no end record)',
+
+  // 토큰·시간
+  'tokens.input': 'Input',
+  'tokens.output': 'Output',
+  'tokens.cacheRead': 'Cache read',
+  'tokens.cacheWrite': 'Cache write',
+  'tokens.total': 'Total tokens {0}',
+  'time.justNow': 'just now',
+  'time.minutesAgo': '{0} min ago',
+  'time.hoursAgo': '{0} h ago',
+  'time.yesterday': 'yesterday',
+  'time.daysAgo': '{0} d ago',
+  'time.weeksAgo': '{0} wk ago',
+  'time.monthsAgo': '{0} mo ago',
+  'time.yearsAgo': '{0} yr ago',
+  'duration.s': '{0}s',
+  'duration.m': '{0}m',
+  'duration.ms': '{0}m {1}s',
+  'duration.h': '{0}h',
+  'duration.hm': '{0}h {1}m',
+  'duration.d': '{0}d',
+  'duration.dh': '{0}d {1}h',
+
+  // 동작 이름(오류 앞머리)
+  'action.listFolders': 'Folder list',
+  'action.listWindows': 'Window list',
+  'action.listPinned': 'Pinned session list',
+  'action.listTasks': 'Task list',
+  'action.autostartStatus': 'Autostart status',
+  'action.openWindow': 'Open window',
+  'action.addFolder': 'Add folder',
+  'action.clone': 'Clone',
+  'action.removeFolder': 'Remove folder',
+  'action.pin': 'Pin',
+  'action.unpin': 'Unpin',
+  'action.savePinned': 'Save pinned session',
+  'action.reorder': 'Reorder',
+  'action.resumeNow': 'Resume now',
+  'action.setAutostart': 'Autostart setting',
+
+  // 알림
+  'info.openingWindow': 'Opening window…',
+  'info.focusedWindow': 'Switched to the window that was already open',
+  'info.launchingWindow': 'Opening the window',
+  'info.resumeStarted': 'Started resuming {0} session(s)',
+  'info.nothingToResume': 'No sessions to resume',
+  'error.addFolderAbsolute': 'Add folder: enter an absolute path (e.g. C:\\Dev\\project)',
+
+  // 오류(describeError)
+  'error.notFound': 'Target not found',
+  'error.invalidPath': 'The folder path does not exist or is not a folder',
+  'error.launchFailed': 'Could not open the window',
+  'error.sessionBusy': 'This session is already running elsewhere',
+  'error.timeout': 'The daemon did not respond in time',
+  'error.protocolMismatch': 'The daemon uses a different protocol version',
+  'error.invalidParams': 'The request values are invalid',
+  'error.disconnected': 'Not connected to the daemon',
+  'error.generic': 'Could not process the request',
+} as const;
+
+export type MessageKey = keyof typeof en;
+
+// ko 값은 번역 전 화면 글 그대로예요(사용자가 쓰던 UI).
+const ko: Record<MessageKey, string> = {
+  'app.title': 'Mk42 통합 창',
+  'app.brandSub': '통합 창',
+  'boot.noWebviewApi': 'VS Code 웹뷰 API를 찾지 못했어요.',
+
+  'conn.connected': '연결됨',
+  'conn.connecting': '연결 중',
+  'conn.authFailed': '인증 실패',
+  'conn.superseded': '다른 창에서 열림',
+  'conn.disconnected': '연결 끊김',
+  'conn.reconnectNow': '지금 다시 연결',
+  'conn.detail.connected': '데몬에 연결됐어요',
+  'conn.detail.waitingHost': '확장 호스트를 기다리는 중이에요',
+  'conn.detail.webviewDisconnected': '데몬 연결이 끊겼어요. 확장이 다시 연결하고 있어요',
+  'conn.detail.connecting': '데몬에 연결하는 중이에요',
+  'conn.detail.authFailed': '접속 토큰이 맞지 않아요. 통합 창을 데몬에서 다시 열어 주세요',
+  'conn.detail.superseded': '통합 창을 새로 열어서 이 창은 쉬어요. 닫아도 돼요',
+  'conn.detail.disconnected': '데몬 연결이 끊겼어요. 다시 연결할게요',
+  'conn.detail.noToken': '접속 토큰이 없어요. 통합 창을 데몬에서 다시 열어 주세요',
+  'conn.detail.retryIn': '데몬 연결이 끊겼어요. {0}초 뒤 다시 연결할게요',
+
+  'toolbar.reloadWindow': '창 다시 로드',
+  'toolbar.restartExtensionHost': '확장 다시 로드',
+  'toolbar.theme': '테마',
+
+  'tabs.label': '통합 창 보기',
+  'tabs.pinned': '고정 세션',
+  'tabs.folders': '폴더',
+  'tabs.tasks': '작업',
+
+  'loading.connected': '불러오는 중이에요…',
+  'loading.waiting': '데몬에 연결되면 불러올게요.',
+
+  'common.expand': '펼치기',
+  'common.collapse': '접기',
+
+  'pinned.autostart': '컴퓨터 켜질 때 자동 실행',
+  'pinned.autostartTask': '작업 스케줄러: {0}',
+  'pinned.searchPlaceholder': '고정 세션 검색 — 제목·폴더·그룹·세션 ID',
+  'pinned.searchLabel': '고정 세션 검색',
+  'pinned.groupBy': '묶어 보기',
+  'pinned.resumeAllTitle': '사용 중인 고정 세션을 지금 재개해요',
+  'pinned.resumeAll': '모두 지금 재개',
+  'pinned.empty': '세션 줄의 ☆를 누르면 고정돼요. 고정 세션은 부팅 때 자동으로 재개해요.',
+  'pinned.noMatch': '찾는 고정 세션이 없어요.',
+  'pinned.searchExpanded': '찾는 중에는 모두 펼쳐 보여요',
+  'pinned.openEditorTitle': '{0} — 편집기 창 열기',
+  'pinned.openEditor': '편집기 창 열기',
+  'pinned.resumeGroupTitle': '이 묶음의 고정 세션을 지금 재개해요',
+  'pinned.resumeGroup': '이 묶음 재개',
+  'pinned.openWindowTitle': '{0} — 창 열기',
+  'pinned.myGroup': '내 그룹',
+  'pinned.up': '위로',
+  'pinned.down': '아래로',
+  'pinned.resumeNow': '지금 재개',
+  'pinned.unpin': '고정 해제',
+  'pinned.unpinConfirm': '해제할까요?',
+  'pinned.groupNone': '없음',
+  'pinned.bootResumeTitle': '부팅 자동 재개 대상',
+  'pinned.bootResume': '부팅 때 재개',
+  'pinned.autoSendTitle': '끄면 프롬프트를 채우기만 해요',
+  'pinned.autoSend': '자동 전송',
+  'pinned.groupFieldTitle': '«내 그룹»으로 묶어 볼 때의 그룹 이름(비우면 그룹 없음)',
+  'pinned.groupField': '그룹',
+  'pinned.resumePrompt': '재개 프롬프트',
+  'pinned.resetPrompt': '기본값으로',
+  'pinned.noGroup': '그룹 없음',
+  'pinnedGroupBy.none': '그룹 없음',
+  'pinnedGroupBy.folder': '폴더별',
+  'pinnedGroupBy.agent': '에이전트별',
+  'pinnedGroupBy.group': '내 그룹',
+
+  'settings.unchanged': '(그대로)',
+  'settings.modelRestored': '모델은 대화 기록에서 복원돼요',
+  'settings.model': '모델',
+  'settings.reasoningEffort': '추론 강도',
+
+  'folders.searchPlaceholder': '세션 검색 — 제목·마지막 프롬프트',
+  'folders.searchLabel': '세션 검색',
+  'folders.add': '폴더 등록',
+  'folders.pathPlaceholder': '폴더 경로 또는 git 저장소 주소 (예: C:\\Dev\\project, https://github.com/owner/repo)',
+  'folders.pathLabel': '등록할 폴더 경로 또는 클론할 git 저장소 주소',
+  'folders.pickTitle': '폴더를 골라 등록해요. 칸에 git 저장소 주소가 있으면 클론할 위치를 골라 클론 후 등록해요.',
+  'folders.pick': '폴더 선택…',
+  'folders.pickDialogTitle': 'Mark42에 등록할 폴더',
+  'folders.empty': '등록한 폴더가 없어요. «폴더 등록»으로 프로젝트 폴더를 추가해 주세요.',
+  'folders.matches': '{0}개 일치',
+  'folders.noResults': '검색 결과가 없어요.',
+  'folders.windowsBadge': '창 {0}',
+  'folders.newClaude': '새 Claude Code 세션 창',
+  'folders.newCodex': '새 Codex 세션 창',
+  'folders.editorTitle': '이 폴더의 편집기 창',
+  'folders.editor': '편집기',
+  'folders.remove': '삭제',
+  'folders.removeConfirm': '삭제할까요?',
+  'folders.sessionListError': '세션 목록: {0}',
+  'clone.needPicker': '클론할 위치를 고르려면 폴더 선택이 되는 Mk42 통합 창(최신 mk42-hub.exe)에서 열어 주세요.',
+  'clone.pickTitle': '클론할 위치 — 이 폴더 아래에 «{0}» 폴더가 생겨요',
+  'clone.cloning': '클론하는 중: {0} …',
+  'clone.done': '클론하고 등록했어요: {0}',
+  'clone.badUrl': 'git 저장소 주소로 쓸 수 없어요(https://·ssh://·git://·user@host:path, 비밀번호·토큰 없이).',
+  'sessions.treeLabel': '{0} 세션',
+  'sessions.none': '세션이 없어요',
+  'sessions.showMore': '{0}개 더 보기',
+  'sessions.subagentCount': '서브에이전트 {0}개',
+  'sessions.subagent': '서브에이전트',
+  'sessions.pinTitle': '고정 — 부팅 때 자동 재개',
+  'sessions.pin': '고정',
+
+  'status.busy': '작업 중',
+  'status.waiting': '입력 대기',
+  'status.idle': '대기 중',
+  'status.stopped': '멈춤',
+
+  'role.hub': '통합',
+  'role.editor': '편집기',
+  'windows.open': '열린 창: {0}',
+  'windows.none': '열린 창 없음',
+
+  'tasks.hint': 'Claude Code·Codex 세션의 워크플로우와 서브에이전트 — 최근 12시간, 실행 중인 세션이 먼저예요.',
+  'tasks.refreshTitle': '작업 목록을 지금 다시 읽어요',
+  'tasks.refresh': '새로 고침',
+  'tasks.runningCount': '실행 중인 작업 {0}개',
+  'tasks.empty': '최근 12시간 동안 돌아간 워크플로우·서브에이전트가 없어요.',
+  'tasks.tokens': '{0} 토큰',
+  'tasks.sinceStart': '시작한 지',
+  'tasks.elapsed': '걸린 시간',
+  'tasks.running': '⟳ {0} 실행 중',
+  'tasks.overallProgress': '전체 진행',
+  'tasks.subagents': '서브에이전트 {0}',
+  'tasks.none': '작업이 없어요',
+  'tasks.workflow': '워크플로우',
+  'tasks.workflowProgress': '워크플로우 진행',
+  'tasks.phases': '단계',
+  'tasks.phase': '단계',
+  'tasks.phaseTitle': '{0} — 시작 {1} · 끝 {2}',
+  'tasks.noAgents': '아직 시작한 agent가 없어요',
+  'tasks.kind': '종류',
+  'tasks.summary': '결과 요약',
+  'tasks.oldDaemon': '이 데몬은 아직 작업 목록을 몰라요 — 데몬을 새 버전으로 다시 띄우면 보여요.',
+  'taskStatus.running': '실행 중',
+  'taskStatus.done': '끝남',
+  'taskStatus.failed': '실패',
+  'taskStatus.stale': '멈춤(끝난 기록 없이 움직임 없음)',
+
+  'tokens.input': '입력',
+  'tokens.output': '출력',
+  'tokens.cacheRead': '캐시 읽기',
+  'tokens.cacheWrite': '캐시 쓰기',
+  'tokens.total': '토큰 합계 {0}',
+  'time.justNow': '방금 전',
+  'time.minutesAgo': '{0}분 전',
+  'time.hoursAgo': '{0}시간 전',
+  'time.yesterday': '어제',
+  'time.daysAgo': '{0}일 전',
+  'time.weeksAgo': '{0}주 전',
+  'time.monthsAgo': '{0}개월 전',
+  'time.yearsAgo': '{0}년 전',
+  'duration.s': '{0}초',
+  'duration.m': '{0}분',
+  'duration.ms': '{0}분 {1}초',
+  'duration.h': '{0}시간',
+  'duration.hm': '{0}시간 {1}분',
+  'duration.d': '{0}일',
+  'duration.dh': '{0}일 {1}시간',
+
+  'action.listFolders': '폴더 목록',
+  'action.listWindows': '창 목록',
+  'action.listPinned': '고정 세션 목록',
+  'action.listTasks': '작업 목록',
+  'action.autostartStatus': '자동 실행 상태',
+  'action.openWindow': '창 열기',
+  'action.addFolder': '폴더 등록',
+  'action.clone': '클론',
+  'action.removeFolder': '폴더 삭제',
+  'action.pin': '고정',
+  'action.unpin': '고정 해제',
+  'action.savePinned': '고정 세션 저장',
+  'action.reorder': '순서 바꾸기',
+  'action.resumeNow': '지금 재개',
+  'action.setAutostart': '자동 실행 설정',
+
+  'info.openingWindow': '창을 여는 중…',
+  'info.focusedWindow': '열려 있는 창으로 옮겼어요',
+  'info.launchingWindow': '창을 띄우고 있어요',
+  'info.resumeStarted': '{0}개 세션 재개를 시작했어요',
+  'info.nothingToResume': '재개할 세션이 없어요',
+  'error.addFolderAbsolute': '폴더 등록: 절대 경로를 넣어 주세요 (예: C:\\Dev\\project)',
+
+  'error.notFound': '대상을 찾지 못했어요',
+  'error.invalidPath': '폴더 경로가 없거나 폴더가 아니에요',
+  'error.launchFailed': '창을 띄우지 못했어요',
+  'error.sessionBusy': '이 세션은 이미 다른 곳에서 실행 중이에요',
+  'error.timeout': '데몬이 제때 응답하지 않았어요',
+  'error.protocolMismatch': '데몬과 프로토콜 버전이 달라요',
+  'error.invalidParams': '요청 값이 올바르지 않아요',
+  'error.disconnected': '데몬에 연결돼 있지 않아요',
+  'error.generic': '요청을 처리하지 못했어요',
+};
+
+const DICTS: Record<Lang, Record<MessageKey, string>> = { en, ko };
+
+/** 테스트에서 보는 사전(키 맞춤 확인용) */
+export const MESSAGES: Readonly<Record<Lang, Readonly<Record<MessageKey, string>>>> = DICTS;
+
+interface NavigatorLike {
+  languages?: readonly string[];
+  language?: string;
+}
+
+/** navigator.languages[0](없으면 navigator.language)이 ko로 시작하면 ko, 아니면 en */
+export function detectLanguage(nav: NavigatorLike | undefined = (globalThis as { navigator?: NavigatorLike }).navigator): Lang {
+  const first = nav?.languages?.[0] || nav?.language || '';
+  return first.toLowerCase().startsWith('ko') ? 'ko' : 'en';
+}
+
+let current: Lang | undefined;
+
+/** 지금 화면 언어(처음 부를 때 navigator에서 정해요) */
+export function language(): Lang {
+  return (current ??= detectLanguage());
+}
+
+/** 언어를 정해요(테스트용). undefined면 다음에 navigator에서 다시 정해요. */
+export function setLanguage(lang: Lang | undefined): void {
+  current = lang;
+}
+
+/** 숫자 자릿점 등에 쓰는 로캘 */
+export function locale(): string {
+  return language() === 'ko' ? 'ko-KR' : 'en-US';
+}
+
+/** 키 → 지금 언어의 글. {0}·{1}… 자리에 args를 넣어요. 없는 키는 en, 그것도 없으면 키 그대로. */
+export function t(key: MessageKey, ...args: (string | number)[]): string {
+  const text = DICTS[language()][key] ?? en[key] ?? key;
+  return args.length ? text.replace(/\{(\d+)\}/g, (m, i: string) => (Number(i) < args.length ? String(args[Number(i)]) : m)) : text;
+}

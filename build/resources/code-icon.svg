@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Mk42: red metal plate, gold «42», small «Mk» (same design as mk42.ico) -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b3202e"/>
+      <stop offset="0.55" stop-color="#8e1520"/>
+      <stop offset="1" stop-color="#5e0b13"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fde58a"/>
+      <stop offset="0.5" stop-color="#f7cd5c"/>
+      <stop offset="1" stop-color="#c9952a"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="150" fill="url(#plate)" stroke="#3f070c" stroke-width="24"/>
+  <rect x="96" y="96" width="832" height="832" rx="112" fill="none" stroke="#d0414c" stroke-opacity="0.45" stroke-width="12"/>
+  <text x="168" y="300" font-family="Segoe UI, Arial, sans-serif" font-weight="700" font-size="190" fill="url(#gold)">Mk</text>
+  <text x="512" y="820" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="900" font-size="560" fill="url(#gold)" stroke="#6b4a0c" stroke-width="10">42</text>
+</svg>

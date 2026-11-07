@@ -1,0 +1,25 @@
+Mk42 (Mark42)
+Copyright 2026 SoliEstre
+
+This product includes software developed by SoliEstre, licensed under the
+Apache License, Version 2.0 (see LICENSE).
+
+This product is built on Code - OSS (https://github.com/microsoft/vscode),
+Copyright (c) Microsoft Corporation, licensed under the MIT License. The files
+of Code - OSS changed by Mk42 keep their original copyright notice; the changes
+are in build/patches.
+
+Binary distributions of Mk42 also contain, each under its own license:
+  - Electron and Chromium (MIT and the Chromium licenses; LICENSES.chromium.html)
+  - Node.js (MIT, with the notices of its bundled components)
+  - .NET runtime and Windows Forms (MIT)
+  - Microsoft Edge WebView2 SDK (BSD-style; see the WebView2 LICENSE)
+  - ws (MIT)
+  - the third-party components listed in Code - OSS ThirdPartyNotices.txt
+Each binary release must carry the full texts of these notices (the packaging
+step that collects them into THIRD-PARTY-NOTICES.txt is still to be added — no
+public binary has been released yet).
+
+Mk42 does not include the Claude Code or Codex extensions. On first run Mk42
+downloads them from Open VSX into its own extensions folder; they are subject to
+the terms of their publishers.

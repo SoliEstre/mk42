@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- D46 Mk42 통합 창: 데몬의 통합 창 화면(extension/hub-ui, 127.0.0.1 서버)을 WebView2로 띄우는 전용 창. Edge 앱(app) 창을 대신해요. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Mark42.Hub</RootNamespace>
+    <AssemblyName>mk42-hub</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- exe 아이콘: HubIcon(Mk42 + 금색 «창 넷» 표시)으로 만든 파일. 그림을 바꾸면 HubIconTests 안내대로 다시 만들어요. -->
+    <ApplicationIcon>Assets\mk42-hub.ico</ApplicationIcon>
+    <SupportedOSPlatformVersion>10.0.22621.0</SupportedOSPlatformVersion>
+    <NoWarn>$(NoWarn);WFAC010;WFO0003;WFO1000</NoWarn>
+  </PropertyGroup>
+
+  <!-- 배포: dotnet publish src\Mark42.Hub -p:PublishProfile=win-x64 -o "%LOCALAPPDATA%\Mark42\hub" (self-contained single-file).
+       데몬은 <home>\hub\mk42-hub.exe를 찾아요(home은 본인 전용 폴더). -->
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Mark42.Hub.Tests" />
+  </ItemGroup>
+
+  <!-- Mk42 앱 아이콘 그림(D41)은 Shared\AppIconArt.cs — 창 당겨오기가 HPP로 분리돼(D50) 링크 대신 사본을 둬요. -->
+
+</Project>

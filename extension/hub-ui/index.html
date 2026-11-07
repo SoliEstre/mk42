@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+    />
+    <!-- lang·title은 main.ts가 화면 언어(navigator.languages)로 바로 고쳐 써요 -->
+    <title>Mk42</title>
+    <link rel="stylesheet" href="/hub-ui.css" />
+  </head>
+  <body data-transport="ws">
+    <div id="app"></div>
+    <script src="/hub-ui.js" defer></script>
+  </body>
+</html>

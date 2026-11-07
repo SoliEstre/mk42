@@ -1,0 +1,26 @@
+<Project>
+  <!-- 통합 창 exe 빌드 규칙. 예전에는 winpull의 Directory.Build.props를 가져왔는데, 창 당겨오기를 HPP로 떼어 내면서(D50)
+       그 파일이 없어져 같은 내용을 여기 둬요. -->
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    <!-- 빌드 PC 경로를 exe·PDB에 남기지 않아요 -->
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+    <SatelliteResourceLanguages>ko;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <!-- 빌드마다 커지는 파일 버전: 1.0.<2026-01-01부터 날짜 수>.<그날 UTC 초 ÷ 2>(각 자리 65535 이하). Mk42Version을 넘기면 그 값을 써요. -->
+  <PropertyGroup Condition="'$(Mk42Version)' == ''">
+    <Mk42BuildDays>$([System.DateTime]::UtcNow.Subtract($([System.DateTime]::Parse('2026-01-01T00:00:00Z').ToUniversalTime())).Days)</Mk42BuildDays>
+    <Mk42BuildHalfSeconds>$([System.Math]::Floor($([MSBuild]::Divide($([System.DateTime]::UtcNow.TimeOfDay.TotalSeconds), 2))))</Mk42BuildHalfSeconds>
+    <Mk42Version>1.0.$(Mk42BuildDays).$(Mk42BuildHalfSeconds)</Mk42Version>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Version>$(Mk42Version)</Version>
+    <FileVersion>$(Mk42Version)</FileVersion>
+    <AssemblyVersion>$(Mk42Version)</AssemblyVersion>
+  </PropertyGroup>
+</Project>

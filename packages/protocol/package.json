@@ -1,0 +1,13 @@
+{
+  "name": "@mark42/protocol",
+  "private": true,
+  "license": "Apache-2.0",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./paths": "./src/paths.ts",
+    "./node": "./src/node.ts",
+    "./auth": "./src/auth.ts"
+  }
+}

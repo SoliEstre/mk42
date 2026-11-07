@@ -1,0 +1,54 @@
+{
+  "//": "Mark42 product.json overlay (D7, D41, D43, D47, PM/005 §3). Merged into upstream product.json by scripts/apply.mjs: objects merge, other values replace, null deletes the key.",
+  "nameShort": "Mk42",
+  "nameLong": "Mark42",
+  "applicationName": "mk42",
+  "dataFolderName": ".mk42",
+  "sharedDataFolderName": ".mk42-shared",
+  "quality": "stable",
+  "win32MutexName": "mark42",
+  "win32DirName": "Mark42",
+  "win32NameVersion": "Mark42",
+  "win32RegValueName": "Mark42",
+  "win32x64AppId": "{{4F3C8E2A-6B1D-4C7E-9A52-42D0E1F3A842}",
+  "win32arm64AppId": "{{9B6E1D74-2A3F-4E8C-B1D5-42C7A0E6F942}",
+  "win32x64UserAppId": "{{C2A7F5E1-8D4B-4F69-A3E0-42B9D6C1E742}",
+  "win32arm64UserAppId": "{{E8D1B3A6-5C2F-4A97-8E4D-42F0A7B2C642}",
+  "win32AppUserModelId": "Mark42.Mk42.Code",
+  "win32ShellNameShort": "Mk&42",
+  "win32TunnelServiceMutex": "mark42-tunnelservice",
+  "win32TunnelMutex": "mark42-tunnel",
+  "serverApplicationName": "mk42-server",
+  "serverDataFolderName": ".mk42-server",
+  "tunnelApplicationName": "mk42-tunnel",
+  "urlProtocol": "mark42",
+  "reportIssueUrl": "",
+  "builtInExtensions": [],
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json",
+    "extensionUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+    "resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}",
+    "nlsBaseUrl": ""
+  },
+  "linkProtectionTrustedDomains": ["https://open-vsx.org"],
+  "extensionEnabledApiProposals": {
+    "openai.chatgpt": ["chatSessionsProvider", "languageModelProxy"]
+  },
+  "defaultChatAgent": {
+    "provider": {
+      "default": { "id": "mark42-none", "name": "None" },
+      "enterprise": { "id": "mark42-none-enterprise", "name": "None" }
+    },
+    "entitlementUrl": "",
+    "entitlementSignupLimitedUrl": "",
+    "tokenEntitlementUrl": "",
+    "mcpRegistryDataUrl": "",
+    "mcpConnectorsUrl": "",
+    "managedSettingsUrl": ""
+  },
+  "trustedExtensionAuthAccess": null,
+  "builtInExtensionsEnabledWithAutoUpdates": [],
+  "voiceWsUrl": null,
+  "agentsTelemetryAppName": null
+}

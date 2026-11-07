@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Mark42.Hub/Mark42.Hub.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Mark42.Hub.Tests/Mark42.Hub.Tests.csproj" />
+  </Folder>
+</Solution>

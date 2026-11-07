@@ -1,0 +1,20 @@
+{
+  "name": "mark42",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mark42 — Claude Code·Codex 전용으로 경량화한 VS Code(Code-OSS) 포크의 내장 확장·데몬·빌드 모노레포",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "workspaces": ["packages/*", "extension", "daemon"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p daemon/tsconfig.json --noEmit && tsc -p extension/tsconfig.json --noEmit && tsc -p extension/hub-ui/tsconfig.json --noEmit",
+    "test": "node --test --test-reporter=spec \"packages/*/test/**/*.test.ts\" \"daemon/test/**/*.test.ts\" \"extension/test/**/*.test.ts\" \"extension/hub-ui/test/**/*.test.ts\"",
+    "build": "npm run build -w daemon && npm run build -w extension"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

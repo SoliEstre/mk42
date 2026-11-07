@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+*.vsix
+*.log
+.vscode-test/
+*.tsbuildinfo
+# 로컬 실측 산출물
+.scratch/
+# 자격증명
+*.key
+*.pem
+# 업데이트 서명 공개 키(개인 키는 빌드 PC ~/.secrets에만)
+!build/update-signing.pub.pem
+.env
+.env.*
