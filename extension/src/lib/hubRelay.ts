@@ -3,6 +3,8 @@ import { ErrorCode, RpcError, type DaemonApi, type HostToWebview, type RequestMe
 import { sourceText, type Translate } from './l10n.ts';
 
 export const HOST_METHOD_PREFIX = 'ui.';
+/** 웹뷰가 넘긴 요청 한도의 상한 */
+export const RELAY_MAX_TIMEOUT_MS = 15 * 60_000;
 const FORWARDED_NOTIFICATIONS: ReadonlySet<string> = new Set(['window.status']);
 
 /** 웹뷰가 이 창의 데몬 연결로 부르면 안 되는 요청 — 창 등록(hello)과 연결 인증·데몬 전용 메서드(`$/…`) */
@@ -68,8 +70,11 @@ export class HubRelay {
           this.#post({ type: 'rpcResult', id, error: { code: ErrorCode.InternalError, message: 'daemon disconnected' } });
           return;
         }
+        // 웹뷰가 정한 한도(업데이트 확인 90초·클론 11분 등)를 데몬 요청에도 써요 — 없으면 기본(30초). 지나치게 긴 값은 15분으로
+        const timeoutMs =
+          typeof raw.timeoutMs === 'number' && Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0 ? Math.min(raw.timeoutMs, RELAY_MAX_TIMEOUT_MS) : undefined;
         try {
-          const result = await api.request(raw.method as RequestMethod, (raw.params ?? {}) as never);
+          const result = await api.request(raw.method as RequestMethod, (raw.params ?? {}) as never, timeoutMs);
           this.#post({ type: 'rpcResult', id, result });
         } catch (e) {
           const code = e instanceof RpcError ? e.code : ErrorCode.InternalError;

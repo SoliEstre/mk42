@@ -73,6 +73,7 @@ import {
   type WindowCount,
 } from './model.ts';
 import type { ChangeKind, HubStore } from './store.ts';
+import { formatBytes, updateView } from './update.ts';
 
 export interface UiPrefs {
   query: string;
@@ -140,6 +141,17 @@ export class HubApp {
   #pinnedCount!: HTMLElement;
   #autostartInput!: HTMLInputElement;
   #autostartLabel!: HTMLElement;
+  /** 머리 줄 오른쪽 «Mk42 업데이트»(update.ts) */
+  #updateEl!: HTMLElement;
+  #updatePill!: HTMLElement;
+  #updateText!: HTMLElement;
+  #updateProgress!: HTMLProgressElement;
+  #updateCheckBtn!: HTMLButtonElement;
+  #updateDownloadBtn!: HTMLButtonElement;
+  #updateInstallBtn!: HTMLButtonElement;
+  #updateMenu!: HTMLDetailsElement;
+  #updateAutoDownload!: HTMLInputElement;
+  #updateAutoInstall!: HTMLInputElement;
   #folderList!: HTMLElement;
   #pinnedDirty = false;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -184,11 +196,15 @@ export class HubApp {
     this.#store.onChange((kinds) => this.#onChange(kinds));
     this.#renderConnection();
     this.#renderAutostart();
+    this.#renderUpdate();
     this.#renderPinned();
     this.#renderFolders();
     this.#renderTasks();
-    // 상대 시간 갱신
-    this.#clock = setInterval(() => this.#renderFolders(), 60_000);
+    // 상대 시간 갱신(업데이트의 «마지막 확인»도)
+    this.#clock = setInterval(() => {
+      this.#renderFolders();
+      this.#renderUpdate();
+    }, 60_000);
   }
 
   dispose(): void {
@@ -305,6 +321,7 @@ export class HubApp {
   }
 
   #onChange(kinds: Set<ChangeKind>): void {
+    if (kinds.has('update') || kinds.has('connection')) this.#renderUpdate();
     if (kinds.has('connection')) {
       this.#renderConnection();
       // 아직 못 읽은 목록의 안내 문구가 연결 상태를 따라가요.
@@ -561,6 +578,7 @@ export class HubApp {
         { cls: 'topbar' },
         el('div', { cls: 'brand' }, el('strong', { text: 'Mk42' }), el('span', { cls: 'muted', text: t('app.brandSub') })),
         el('div', { cls: 'conn-wrap' }, this.#connEl, this.#connDetail, this.#reconnectBtn),
+        this.#buildUpdate(),
         toolbar,
       ),
       this.#toastEl,
@@ -569,6 +587,113 @@ export class HubApp {
       foldersPanel,
       tasksPanel,
     );
+  }
+
+  /** 머리 줄 오른쪽: 판·상태(진행 막대), [확인]·[받기]·[설치(두 번 눌러 확정)], ⚙ 자동 받기·자동 설치 */
+  #buildUpdate(): HTMLElement {
+    const store = this.#store;
+    this.#updateText = el('span', { cls: 'update-text' });
+    this.#updateProgress = el('progress', { cls: 'update-progress', attrs: { max: 1, value: 0, hidden: true } });
+    this.#updatePill = el(
+      'span',
+      { cls: 'update-pill', attrs: { role: 'status', 'aria-live': 'polite' } },
+      el('span', { cls: 'dot' }),
+      this.#updateText,
+      this.#updateProgress,
+    );
+    this.#updateCheckBtn = el('button', {
+      cls: 'btn small',
+      attrs: { type: 'button', title: t('update.btn.checkTitle') },
+      text: t('update.btn.check'),
+      on: { click: () => void store.checkUpdate() },
+    });
+    this.#updateDownloadBtn = el('button', {
+      cls: 'btn small primary',
+      attrs: { type: 'button', hidden: true },
+      text: t('update.btn.download'),
+      on: { click: () => void store.downloadUpdate() },
+    });
+    this.#updateInstallBtn = confirmButton(t('update.btn.install'), t('update.btn.installConfirm'), () => void store.installUpdate(), 'small primary');
+    this.#updateInstallBtn.hidden = true;
+    this.#updateAutoDownload = el('input', {
+      attrs: { type: 'checkbox' },
+      on: { change: () => void store.setUpdateAuto({ download: this.#updateAutoDownload.checked }) },
+    });
+    this.#updateAutoInstall = el('input', {
+      attrs: { type: 'checkbox' },
+      on: { change: () => void store.setUpdateAuto({ install: this.#updateAutoInstall.checked }) },
+    });
+    const summary = el('summary', {
+      cls: 'btn small icon',
+      attrs: { title: t('update.menu.label'), 'aria-label': t('update.menu.label') },
+      text: '⚙',
+    });
+    this.#updateMenu = el(
+      'details',
+      { cls: 'update-menu' },
+      summary,
+      el(
+        'div',
+        { cls: 'update-menu-panel', attrs: { role: 'group', 'aria-label': t('update.menu.label') } },
+        el('label', { cls: 'check' }, this.#updateAutoDownload, el('span', { text: t('update.menu.autoDownload') })),
+        el('label', { cls: 'check' }, this.#updateAutoInstall, el('span', { text: t('update.menu.autoInstall') })),
+        el('p', { cls: 'muted small', text: t('update.menu.hint') }),
+      ),
+    );
+    // 메뉴 바깥을 누르거나 Esc면 닫아요
+    document.addEventListener(
+      'pointerdown',
+      (e) => {
+        if (this.#updateMenu.open && e.target instanceof Node && !this.#updateMenu.contains(e.target)) this.#updateMenu.open = false;
+      },
+      true,
+    );
+    this.#updateMenu.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || !this.#updateMenu.open) return;
+      this.#updateMenu.open = false;
+      summary.focus();
+    });
+    this.#updateEl = el(
+      'div',
+      { cls: 'update', attrs: { hidden: true } },
+      this.#updatePill,
+      this.#updateCheckBtn,
+      this.#updateDownloadBtn,
+      this.#updateInstallBtn,
+      this.#updateMenu,
+    );
+    return this.#updateEl;
+  }
+
+  #renderUpdate(): void {
+    const s = this.#store.data.update;
+    // 옛 데몬(update.* 없음)·아직 못 읽음이면 숨겨요
+    this.#updateEl.hidden = !s;
+    if (!s) return;
+    const connected = this.#store.connection.connected;
+    const v = updateView(s, this.#store.data.updateBusy);
+    // 보일지는 기다리는 요청과 상관없이(누르는 동안 단추가 사라지지 않게), 켤지는 기다리는 요청·연결까지
+    const shown = updateView(s);
+    this.#updateEl.dataset.tone = v.tone;
+    this.#updateText.textContent = v.label;
+    this.#updatePill.title = v.title;
+    this.#updateProgress.hidden = v.progress === undefined;
+    if (v.progress !== undefined) this.#updateProgress.value = v.progress;
+    this.#updateCheckBtn.hidden = s.state === 'disabled';
+    this.#updateCheckBtn.disabled = !connected || !v.canCheck;
+    this.#updateDownloadBtn.hidden = !shown.canDownload;
+    this.#updateDownloadBtn.disabled = !connected || !v.canDownload;
+    this.#updateDownloadBtn.title = t('update.btn.downloadTitle', s.latest ?? '?', formatBytes(s.size) || '?');
+    this.#updateInstallBtn.hidden = !shown.canInstall;
+    this.#updateInstallBtn.disabled = !connected || !v.canInstall;
+    this.#updateInstallBtn.title = t('update.btn.installTitle', s.latest ?? '?');
+    this.#updateMenu.hidden = !v.auto;
+    if (!v.auto) this.#updateMenu.open = false;
+    const menuOff = !connected || this.#store.data.updateBusy !== undefined;
+    this.#updateAutoDownload.checked = v.auto?.download ?? true;
+    this.#updateAutoInstall.checked = v.auto?.install ?? false;
+    this.#updateAutoDownload.disabled = menuOff;
+    this.#updateAutoInstall.disabled = menuOff;
   }
 
   #selectTab(tab: HubTab): void {

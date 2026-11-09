@@ -91,7 +91,7 @@ export class WebviewTransport implements HubConnection {
             }, timeoutMs)
           : undefined;
       this.#pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, method });
-      this.#post({ type: 'rpc', id, method, params });
+      this.#post({ type: 'rpc', id, method, params, ...(timeoutMs > 0 ? { timeoutMs } : {}) });
     });
   }
 

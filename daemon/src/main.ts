@@ -251,6 +251,7 @@ async function main(): Promise<number> {
   const mk42Update = new Mk42Updater({
     home: args.home,
     autoInstall: () => registry.settings.update?.autoInstall === true,
+    autoDownload: () => registry.settings.update?.autoDownload !== false,
     onChange: (s) => notifyMk42Update(s),
     log: log.child('self-update'),
   });

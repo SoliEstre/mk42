@@ -160,9 +160,18 @@ export interface AgentExtensionUpdate {
 
 /**
  * Mk42 자체 업데이트 상태(데몬 updater.ts, 계약 C4). disabled = 설치 기록에 업데이트 채널이 없음(개발 실행·채널 없는 패키지).
+ * available = 서명을 맞춘 새 판이 있지만 자동 받기(settings.update.autoDownload)가 꺼져 있어 아직 받지 않았어요(update.download를 기다려요).
  * ready = 새 판 설치 파일을 받아 서명·크기·sha256을 맞췄어요(사용자 «설치» 또는 settings.update.autoInstall을 기다려요).
  */
-export type Mk42UpdateState = 'disabled' | 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error';
+export type Mk42UpdateState = 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'installing' | 'error';
+
+/** 자체 업데이트 자동 동작(registry.json settings.update) — download 기본 켬(D55), install 기본 꺼짐 */
+export interface Mk42UpdateAuto {
+  /** 새 판을 찾으면 바로 받아요(끄면 available에서 update.download를 기다려요) */
+  download: boolean;
+  /** 받아 확인하면 묻지 않고 바로 조용한 설치를 띄워요 */
+  install: boolean;
+}
 
 export interface Mk42UpdateStatus {
   state: Mk42UpdateState;
@@ -174,12 +183,16 @@ export interface Mk42UpdateStatus {
   latest?: string;
   /** 최신 판 설명 — 데몬이 Windows 표시 언어(ko·en)로 골라요 */
   notes?: string;
+  /** 최신 판 설치 파일 크기(바이트) — available·downloading·ready일 때 */
+  size?: number;
   /** 받는 중일 때 바이트 */
   progress?: { received: number; total: number };
   /** 마지막 실패 한 줄(영어, 자격 증명 없음) */
   error?: string;
   /** 마지막으로 서버를 확인한 시각(ISO) */
   checkedAt?: string;
+  /** 자동 받기·자동 설치 설정(옛 데몬은 없어요) */
+  auto?: Mk42UpdateAuto;
 }
 
 /** 백그라운드 작업(워크플로우·서브에이전트) 상태. stale = 끝났다는 기록 없이 한동안 움직임이 없음(끊김·중단) */

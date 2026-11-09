@@ -2,6 +2,8 @@
 // 보내요. «지금 설치할까요?»는 창 하나만 물어요 — 데몬이 고른 창(가장 최근 포커스, 없으면 처음 붙는 창)에만 announce:true가 와요.
 // 준비된 동안은 창마다 상태 표시줄에 «$(cloud-download) Mk42 <판>»(누르면 같은 질문). «설치» = update.install — 설치 엔진이 데몬을 바꿔 끼우고
 // 창은 닫지 않아요(창은 새 데몬에 다시 붙어요). 명령 «Mk42 업데이트 확인»(mark42.update.check)은 지금 서버를 확인해요.
+// 자동 받기가 꺼져 있으면(settings.update.autoDownload — 통합 창 ⚙) 새 판은 available로 와요: 상태 표시줄 «$(cloud) Mk42 <판>»을 누르면
+// «받을까요?» → update.download. 설정은 통합 창에서만 바꿔요.
 import * as vscode from 'vscode';
 import type { DaemonApi, DaemonNotification, DaemonNotificationMap, Mk42UpdateChanged, Mk42UpdateStatus } from '@mark42/protocol';
 import type { ConnectionState } from './daemonClient.ts';
@@ -20,7 +22,7 @@ export interface Mk42UpdateDaemon {
   onStateChange(cb: (s: ConnectionState) => void): { dispose(): void };
 }
 
-const STATES: ReadonlySet<string> = new Set(['disabled', 'idle', 'checking', 'downloading', 'ready', 'installing', 'error']);
+const STATES: ReadonlySet<string> = new Set(['disabled', 'idle', 'checking', 'available', 'downloading', 'ready', 'installing', 'error']);
 
 /** 데몬이 보낸 값이 상태 모양인지(옛 데몬은 update.*를 몰라서 오류나 빈 값을 줘요) */
 export function isMk42UpdateStatus(v: unknown): v is Mk42UpdateStatus {
@@ -56,7 +58,7 @@ export class Mk42UpdateNotifier implements vscode.Disposable {
       }),
       daemon.onStateChange((s) => {
         if (s === 'connected') void this.refresh();
-        else if (s === 'disconnected' && this.#status?.state !== 'ready') this.#item.hide();
+        else if (s === 'disconnected' && this.#status?.state !== 'ready' && this.#status?.state !== 'available') this.#item.hide();
       }),
     );
     void this.refresh();
@@ -98,6 +100,7 @@ export class Mk42UpdateNotifier implements vscode.Disposable {
     this.#apply(s);
     switch (s.state) {
       case 'ready':
+      case 'available':
         await this.ask();
         return;
       case 'downloading':
@@ -117,9 +120,10 @@ export class Mk42UpdateNotifier implements vscode.Disposable {
     }
   }
 
-  /** 준비된 판을 지금 설치할지 물어요(상태 표시줄 단추·확인 명령·데몬이 고른 창) */
+  /** 준비된 판을 지금 설치할지(available이면 받을지) 물어요(상태 표시줄 단추·확인 명령·데몬이 고른 창) */
   async ask(): Promise<void> {
     const s = this.#status;
+    if (s?.state === 'available') return this.#askDownload(s);
     if (!s || s.state !== 'ready' || !s.latest || this.#asking) return;
     const version = s.latest;
     this.#announced.add(version);
@@ -131,6 +135,40 @@ export class Mk42UpdateNotifier implements vscode.Disposable {
       const pick = await vscode.window.showInformationMessage(s.notes ? `${message}\n\n${s.notes}` : message, install, later);
       if (pick !== install) return;
       await this.#install(version);
+    } finally {
+      this.#asking = false;
+    }
+  }
+
+  /** 자동 받기가 꺼져 있어 기다리는 새 판 — 받을지 물어요 */
+  async #askDownload(s: Mk42UpdateStatus): Promise<void> {
+    if (!s.latest || this.#asking) return;
+    const version = s.latest;
+    this.#asking = true;
+    try {
+      const download = vscode.l10n.t('Download');
+      const later = vscode.l10n.t('Later');
+      const message = vscode.l10n.t('Mk42 update {0} is available. Download it now?', version);
+      const pick = await vscode.window.showInformationMessage(s.notes ? `${message}\n\n${s.notes}` : message, download, later);
+      if (pick !== download) return;
+      const api = this.#daemon.api;
+      let error: string | undefined;
+      if (!api) error = vscode.l10n.t('the Mark42 daemon is not connected');
+      else {
+        try {
+          const r = await api.request('update.download', {}, CHECK_TIMEOUT_MS);
+          if (!isMk42UpdateStatus(r)) throw new Error(vscode.l10n.t('the Mark42 daemon does not support updates yet'));
+          this.#apply(r);
+          if (r.state === 'error') error = r.error ?? '?';
+          else if (r.state === 'downloading') void vscode.window.showInformationMessage(vscode.l10n.t('Downloading Mk42 update {0}…', r.latest ?? version));
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+      }
+      if (error !== undefined) {
+        this.#log.warn(`Mk42 update ${version}: download did not start (${error})`);
+        void vscode.window.showErrorMessage(vscode.l10n.t('Could not download the Mk42 update: {0}', error));
+      }
     } finally {
       this.#asking = false;
     }
@@ -167,6 +205,11 @@ export class Mk42UpdateNotifier implements vscode.Disposable {
     if (s.state === 'ready' && s.latest) {
       this.#item.text = `$(cloud-download) Mk42 ${s.latest}`;
       this.#item.tooltip = vscode.l10n.t('Mk42 update {0} is ready', s.latest);
+      this.#item.name = vscode.l10n.t('Mk42 update');
+      this.#item.show();
+    } else if (s.state === 'available' && s.latest) {
+      this.#item.text = `$(cloud) Mk42 ${s.latest}`;
+      this.#item.tooltip = vscode.l10n.t('Mk42 update {0} is available', s.latest);
       this.#item.name = vscode.l10n.t('Mk42 update');
       this.#item.show();
     } else {

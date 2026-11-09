@@ -180,6 +180,10 @@ export interface DaemonCoreOptions {
     refreshStatus?(): Promise<Mk42UpdateStatus>;
     check(): Promise<Mk42UpdateStatus>;
     install(): Promise<Mk42UpdateInstallResult>;
+    /** update.download — 자동 받기가 꺼져 기다리는 새 판을 지금 받아요 */
+    download?(): Promise<Mk42UpdateStatus>;
+    /** update.setAuto 뒤 — 설정을 다시 읽어 알리고(자동 받기를 켰으면 기다리던 판을 받아요) */
+    settingsChanged?(): Promise<Mk42UpdateStatus>;
   };
 }
 
@@ -1037,6 +1041,29 @@ export class DaemonCore {
       },
       'update.check': async () => (this.#opts.mk42Update ? this.#opts.mk42Update.check() : { state: 'disabled', current: 'unknown' }),
       'update.install': async () => (this.#opts.mk42Update ? this.#opts.mk42Update.install() : { started: false, error: 'self-update is not available' }),
+      'update.download': async () => {
+        const u = this.#opts.mk42Update;
+        if (!u) return { state: 'disabled', current: 'unknown' };
+        return u.download ? u.download() : u.status();
+      },
+      'update.setAuto': async (p) => {
+        const patch: { autoDownload?: boolean; autoInstall?: boolean } = {};
+        if (p.download !== undefined) {
+          if (typeof p.download !== 'boolean') throw invalid('download must be boolean');
+          patch.autoDownload = p.download;
+        }
+        if (p.install !== undefined) {
+          if (typeof p.install !== 'boolean') throw invalid('install must be boolean');
+          patch.autoInstall = p.install;
+        }
+        if (patch.autoDownload === undefined && patch.autoInstall === undefined) throw invalid('download or install is required');
+        await this.registry.update((d) => {
+          d.settings.update = { ...d.settings.update, ...patch };
+        });
+        const u = this.#opts.mk42Update;
+        if (!u) return { state: 'disabled', current: 'unknown' };
+        return u.settingsChanged ? u.settingsChanged() : u.status();
+      },
       'folders.add': async (p) => this.#registerFolder(await this.#checkDir(reqString(p.path, 'path')), p.label),
       'folders.clone': async (p) => {
         const parsed = parseCloneUrl(reqString(p.url, 'url'));

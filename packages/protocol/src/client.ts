@@ -25,7 +25,7 @@ export interface HubTransport extends DaemonApi {
 
 /** 웹뷰 ↔ 확장 postMessage 봉투 (D20-A) */
 export type WebviewToHost =
-  | { type: 'rpc'; id: number; method: string; params: unknown }
+  | { type: 'rpc'; id: number; method: string; params: unknown; /** 웹뷰가 정한 요청 한도(ms) — 중계도 같은 한도로 데몬을 기다려요 */ timeoutMs?: number }
   | { type: 'notify'; method: string; params: unknown }
   | { type: 'ready' };
 export type HostToWebview =

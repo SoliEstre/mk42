@@ -130,9 +130,39 @@ test('mk42 update: check command reports up to date / errors / failed install st
   n.dispose();
 });
 
+test('mk42 update: available (auto download off) shows $(cloud), the button asks «받을까요?», «받기» calls update.download', async () => {
+  vs.reset();
+  const AVAILABLE = { ...READY, state: 'available', auto: { download: false, install: false } };
+  let download: unknown = { ...AVAILABLE, state: 'downloading', progress: { received: 0, total: 10 } };
+  const d = fakeDaemon({ 'update.status': AVAILABLE, 'update.download': () => download });
+  const n = new Mk42UpdateNotifier(d.daemon as never, silent);
+  await tick();
+  const item = vs.state.statusItems.at(-1)!;
+  assert.equal(item.visible, true);
+  assert.equal(item.text, '$(cloud) Mk42 2026.1105.143012');
+  vs.state.answers.push('나중에');
+  await vs.commands.executeCommand(MK42_UPDATE_PROMPT_COMMAND);
+  assert.equal(vs.state.messages.at(-1)!.text, 'Mk42 업데이트 2026.1105.143012가 나왔어요. 지금 받을까요?');
+  assert.ok(!d.requests.some(([m]) => m === 'update.download'));
+  vs.state.answers.push('받기');
+  await vs.commands.executeCommand(MK42_UPDATE_PROMPT_COMMAND);
+  assert.ok(d.requests.some(([m]) => m === 'update.download'));
+  assert.equal(vs.state.messages.at(-1)!.text, 'Mk42 업데이트 2026.1105.143012를 받는 중이에요…');
+  assert.equal(item.visible, false, 'downloading hides the item');
+  download = { ...AVAILABLE, state: 'error', error: 'HTTP 404' };
+  d.push('update.changed', AVAILABLE);
+  vs.state.answers.push('받기');
+  await vs.commands.executeCommand(MK42_UPDATE_PROMPT_COMMAND);
+  assert.equal(vs.state.messages.at(-1)!.level, 'error');
+  assert.match(vs.state.messages.at(-1)!.text, /HTTP 404/);
+  assert.equal(vs.state.l10nMissing.size, 0, [...vs.state.l10nMissing].join(' | '));
+  n.dispose();
+});
+
 test('isMk42UpdateStatus rejects junk from old daemons', () => {
   assert.equal(isMk42UpdateStatus({}), false);
   assert.equal(isMk42UpdateStatus(null), false);
   assert.equal(isMk42UpdateStatus({ state: 'weird', current: 'x' }), false);
   assert.equal(isMk42UpdateStatus({ state: 'idle', current: 'x' }), true);
+  assert.equal(isMk42UpdateStatus({ state: 'available', current: 'x' }), true);
 });

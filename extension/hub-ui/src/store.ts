@@ -5,6 +5,8 @@ import {
   type AutostartState,
   ErrorCode,
   type Folder,
+  type Mk42UpdateAuto,
+  type Mk42UpdateStatus,
   type PinnedDefaults,
   type PinnedSession,
   type SessionSummary,
@@ -26,9 +28,12 @@ import {
 import { t } from './i18n.ts';
 import { ALL_TOPICS, TopicDebouncer, type TimerApi } from './refresh.ts';
 import type { HubConnection } from './transport.ts';
+import { isMk42UpdateStatus, type UpdateBusy } from './update.ts';
 
 /** folders.clone 요청 한도 — 데몬의 git clone 한도(10분)보다 조금 길게 */
 export const CLONE_REQUEST_TIMEOUT_MS = 11 * 60_000;
+/** update.check·update.download — 서명 확인까지 기다려요(받기는 데몬이 이어서). 창(확장)과 같은 90초 */
+export const UPDATE_REQUEST_TIMEOUT_MS = 90_000;
 
 export interface HubData {
   folders: Folder[];
@@ -48,6 +53,10 @@ export interface HubData {
   loaded: Set<StateTopic | 'autostart'>;
   /** 진행 중인 주제 */
   loading: Set<StateTopic | 'autostart'>;
+  /** Mk42 자체 업데이트(update.status·update.changed). 옛 데몬·못 읽음이면 undefined — 오른쪽 위를 숨겨요 */
+  update: Mk42UpdateStatus | undefined;
+  /** 통합 창이 보내 놓고 기다리는 업데이트 요청(그 동안 단추를 꺼요) */
+  updateBusy: UpdateBusy | undefined;
 }
 
 export interface HubStoreOptions {
@@ -57,7 +66,7 @@ export interface HubStoreOptions {
   onInfo?: (message: string) => void;
 }
 
-export type ChangeKind = StateTopic | 'autostart' | 'connection';
+export type ChangeKind = StateTopic | 'autostart' | 'connection' | 'update';
 
 export class HubStore {
   readonly data: HubData = {
@@ -72,6 +81,8 @@ export class HubStore {
     tasksError: undefined,
     loaded: new Set(),
     loading: new Set(),
+    update: undefined,
+    updateBusy: undefined,
   };
   #conn: HubConnection;
   #opts: HubStoreOptions;
@@ -79,6 +90,10 @@ export class HubStore {
   #gen = new Map<string, number>();
   #listeners = new Set<(kinds: Set<ChangeKind>) => void>();
   #unsubs: (() => void)[] = [];
+  /** «새 판을 받았어요»를 이미 알린 판 */
+  #toldReady = new Set<string>();
+  /** update.changed를 받을 때마다 +1 — 요청을 보낸 뒤 알림이 왔으면 그 응답(더 옛 상태일 수 있어요)으로 덮지 않아요 */
+  #updateSeq = 0;
 
   constructor(conn: HubConnection, opts: HubStoreOptions = {}) {
     this.#conn = conn;
@@ -100,6 +115,11 @@ export class HubStore {
   start(): void {
     this.#unsubs.push(
       this.#conn.onNotification((method, params) => {
+        if (method === 'update.changed') {
+          this.#updateSeq++;
+          this.#applyUpdate(params, true);
+          return;
+        }
         if (method !== 'state.changed') return;
         const topics = (params as { topics?: unknown }).topics;
         this.#debouncer.push(Array.isArray(topics) ? (topics as StateTopic[]) : ALL_TOPICS);
@@ -133,6 +153,7 @@ export class HubStore {
     if (topics.has('pinned')) jobs.push(this.#loadPinned());
     if (topics.has('tasks')) jobs.push(this.#loadTasks());
     if (includeAutostart) jobs.push(this.#loadAutostart());
+    if (includeAutostart) jobs.push(this.#loadUpdate());
     if (includeAutostart && !this.data.pinnedDefaults) jobs.push(this.#loadPinnedDefaults());
     await Promise.all(jobs);
   }
@@ -259,6 +280,42 @@ export class HubStore {
       this.#fail(t('action.autostartStatus'), e, true);
       this.#end('autostart', g, false);
     }
+  }
+
+  /** 연결될 때 — 네트워크 없이 마지막 상태. 옛 데몬(update.* 없음)이면 숨겨요. 실패는 토스트 없이(머리 줄 한구석이라) */
+  async #loadUpdate(): Promise<void> {
+    try {
+      const s = await this.#conn.request('update.status', {});
+      if (isMk42UpdateStatus(s)) this.#applyUpdate(s, false);
+      else if (this.data.update) {
+        this.data.update = undefined;
+        this.#emit(['update']);
+      }
+    } catch (e) {
+      const code = typeof e === 'object' && e !== null ? (e as { code?: unknown }).code : undefined;
+      if (code !== ErrorCode.MethodNotFound) console.error('[hub-ui] update.status failed', e);
+      else if (this.data.update) {
+        this.data.update = undefined;
+        this.#emit(['update']);
+      }
+    }
+  }
+
+  /** 상태 반영. 알림으로 ready가 되면 한 번 알려요(데몬의 announce는 창 하나에만 가서 통합 창은 스스로) */
+  #applyUpdate(v: unknown, fromNotification: boolean): void {
+    if (!isMk42UpdateStatus(v)) return;
+    const { announce: _announce, ...s } = v as Mk42UpdateStatus & { announce?: boolean };
+    const prev = this.data.update;
+    this.data.update = s;
+    if (fromNotification && s.state === 'ready' && prev?.state !== 'ready') this.#tellReady(s);
+    else if (s.state === 'ready' && s.latest) this.#toldReady.add(s.latest);
+    this.#emit(['update']);
+  }
+
+  #tellReady(s: Mk42UpdateStatus): void {
+    if (!s.latest || this.#toldReady.has(s.latest)) return;
+    this.#toldReady.add(s.latest);
+    this.#opts.onInfo?.(t('update.info.ready', s.latest));
   }
 
   /** 옛 데몬(pinned.defaults 없음)이면 조용히 넘어가요 */
@@ -436,6 +493,104 @@ export class HubStore {
       this.#fail(t('action.setAutostart'), e);
       void this.#loadAutostart();
     }
+  }
+
+  // ---- Mk42 자체 업데이트(통합 창 오른쪽 위) ----
+
+  async #updateAction(busy: UpdateBusy, action: string, run: () => Promise<void>): Promise<void> {
+    if (this.data.updateBusy) return;
+    this.data.updateBusy = busy;
+    this.#emit(['update']);
+    try {
+      await run();
+    } catch (e) {
+      this.#fail(action, e);
+    } finally {
+      this.data.updateBusy = undefined;
+      this.#emit(['update']);
+    }
+  }
+
+  /**
+   * 응답 상태를 반영해요 — 단, 요청을 보낸(seq) 뒤 update.changed가 왔으면 그게 더 새것이라 덮지 않아요
+   * (웹뷰 중계는 응답을 한 차례 늦게 넘겨서, 바로 뒤의 알림이 먼저 도착할 수 있어요).
+   */
+  #expectStatus(v: unknown, seq: number): Mk42UpdateStatus {
+    if (!isMk42UpdateStatus(v)) throw new Error(t('update.info.oldDaemon'));
+    if (seq === this.#updateSeq) this.#applyUpdate(v, false);
+    return v;
+  }
+
+  /** «확인» — 지금 서버를 확인해요(새 판이면 자동 받기에 따라 downloading 또는 available) */
+  checkUpdate(): Promise<void> {
+    const action = t('action.updateCheck');
+    return this.#updateAction('check', action, async () => {
+      const seq = this.#updateSeq;
+      const s = this.#expectStatus(await this.#conn.request('update.check', {}, UPDATE_REQUEST_TIMEOUT_MS), seq);
+      switch (s.state) {
+        case 'idle':
+          this.#opts.onInfo?.(t('update.info.upToDate', s.current));
+          return;
+        case 'available':
+          this.#opts.onInfo?.(t('update.info.available', s.latest ?? '?'));
+          return;
+        case 'downloading':
+          this.#opts.onInfo?.(t('update.info.downloading', s.latest ?? '?'));
+          return;
+        case 'ready':
+          if (s.latest) this.#toldReady.add(s.latest);
+          this.#opts.onInfo?.(t('update.info.ready', s.latest ?? '?'));
+          return;
+        case 'installing':
+          this.#opts.onInfo?.(t('update.info.installing'));
+          return;
+        case 'disabled':
+          this.#opts.onInfo?.(t('update.info.noChannel'));
+          return;
+        case 'error':
+          this.#opts.onError?.(`${action}: ${s.error ?? '?'}`);
+          return;
+        default:
+          return;
+      }
+    });
+  }
+
+  /** «받기» — 자동 받기가 꺼져 기다리는 새 판(또는 받기에 실패한 판)을 지금 받아요 */
+  downloadUpdate(): Promise<void> {
+    const action = t('action.updateDownload');
+    return this.#updateAction('download', action, async () => {
+      const seq = this.#updateSeq;
+      const s = this.#expectStatus(await this.#conn.request('update.download', {}, UPDATE_REQUEST_TIMEOUT_MS), seq);
+      if (s.state === 'error') this.#opts.onError?.(`${action}: ${s.error ?? '?'}`);
+      else if (s.state === 'downloading') this.#opts.onInfo?.(t('update.info.downloading', s.latest ?? '?'));
+    });
+  }
+
+  /** «설치» — 받아 둔 판을 조용히 설치해요. 설치 엔진이 데몬을 바꿔 끼우고 창은 그대로(통합 창은 다시 붙어요) */
+  installUpdate(): Promise<void> {
+    const action = t('action.updateInstall');
+    return this.#updateAction('install', action, async () => {
+      const r = await this.#conn.request('update.install', {});
+      if (r?.started === true) this.#opts.onInfo?.(t('update.info.installing'));
+      else this.#opts.onError?.(`${action}: ${r?.error ?? '?'}`);
+    });
+  }
+
+  /** ⚙ 메뉴 — 자동 받기·자동 설치(registry.json settings.update). 누른 값을 먼저 보이고(응답까지 체크가 되돌아가 보이지 않게), 실패하면 데몬 값으로 */
+  setUpdateAuto(patch: Partial<Mk42UpdateAuto>): Promise<void> {
+    const action = t('action.updateSettings');
+    const cur = this.data.update;
+    if (cur?.auto && !this.data.updateBusy) this.data.update = { ...cur, auto: { ...cur.auto, ...patch } };
+    return this.#updateAction('auto', action, async () => {
+      try {
+        const seq = this.#updateSeq;
+        this.#expectStatus(await this.#conn.request('update.setAuto', patch, UPDATE_REQUEST_TIMEOUT_MS), seq);
+      } catch (e) {
+        void this.#loadUpdate();
+        throw e;
+      }
+    });
   }
 
   #fail(action: string, e: unknown, quietWhenDisconnected = false): void {

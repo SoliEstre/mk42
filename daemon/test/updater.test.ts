@@ -279,6 +279,81 @@ test('updater: auto install starts the installer as soon as the update is ready'
   });
 });
 
+test('updater: auto download off → available (nothing downloaded, older download removed); download() fetches it → ready', async () => {
+  await withFixture(async (f, home) => {
+    writeInstall(home, f.base);
+    mkdirSync(join(home, 'updates'));
+    writeFileSync(join(home, 'updates', 'Mk42-Setup-2026.1001.1.exe'), 'old');
+    let autoDownload = false;
+    const { u, events } = makeUpdater(home, { autoDownload: () => autoDownload });
+    await u.start();
+    assert.deepEqual(u.status().auto, { download: false, install: false });
+    const s = await u.check();
+    assert.equal(s.state, 'available');
+    assert.equal(s.latest, NEXT);
+    assert.equal(s.size, PAYLOAD.length);
+    assert.equal(s.notes, '한국어 설명');
+    assert.ok(!f.requests.some((r) => r.url.endsWith('.exe')), 'no download while auto download is off');
+    assert.deepEqual(readdirSync(join(home, 'updates')), [], 'an older download is superseded');
+    // 정해진 확인도 받지 않아요
+    assert.equal((await u.check()).state, 'available');
+    assert.ok(!f.requests.some((r) => r.url.endsWith('.exe')));
+
+    const d = await u.download();
+    assert.equal(d.state, 'downloading');
+    assert.equal(d.progress?.total, PAYLOAD.length);
+    await u.whenIdle();
+    assert.equal(u.status().state, 'ready');
+    assert.equal(u.status().size, PAYLOAD.length);
+    assert.deepEqual(readdirSync(join(home, 'updates')), [EXE]);
+    assert.ok(events.every((e) => e.auto?.download === false), 'every notification carries the settings');
+    // 받아 둔 판은 자동 받기가 꺼져 있어도 그대로 ready
+    assert.equal((await u.check()).state, 'ready');
+    assert.equal((await u.download()).state, 'ready', 'download() is a no-op once ready');
+  });
+});
+
+test('updater: turning auto download on while an update is available starts the download; settings changes are announced', async () => {
+  await withFixture(async (f, home) => {
+    writeInstall(home, f.base);
+    let autoDownload = false;
+    let autoInstall = false;
+    const { u, events } = makeUpdater(home, { autoDownload: () => autoDownload, autoInstall: () => autoInstall });
+    await u.start();
+    assert.equal((await u.check()).state, 'available');
+    events.length = 0;
+    autoInstall = true;
+    const same = await u.settingsChanged();
+    assert.equal(same.state, 'available', 'auto install alone does not download');
+    assert.deepEqual(events.at(-1)?.auto, { download: false, install: true });
+    autoInstall = false;
+    autoDownload = true;
+    const s = await u.settingsChanged();
+    // 받기는 시작만 하고 바로 답해요(update.setAuto가 서버를 기다리지 않게) — 진행은 알림으로
+    assert.deepEqual(s.auto, { download: true, install: false });
+    await u.whenIdle();
+    assert.ok(events.some((e) => e.state === 'downloading'));
+    assert.equal(u.status().state, 'ready');
+    assert.deepEqual(u.status().auto, { download: true, install: false });
+  });
+});
+
+test('updater: auto download turned on while a check is pruning an old download (state still checking) → that check downloads', async () => {
+  await withFixture(async (f, home) => {
+    writeInstall(home, f.base);
+    mkdirSync(join(home, 'updates'));
+    const old = join(home, 'updates', 'Mk42-Setup-2026.1001.1.exe');
+    writeFileSync(old, 'old');
+    // 정리(#prune)가 옛 파일을 지운 순간부터 켜진 것으로 — update.setAuto가 그 사이에 온 것과 같아요
+    const { u } = makeUpdater(home, { autoDownload: () => !existsSync(old) });
+    await u.start();
+    const s = await u.check();
+    assert.equal(s.state, 'downloading', 'the setting is read again after pruning');
+    await u.whenIdle();
+    assert.equal(u.status().state, 'ready');
+  });
+});
+
 test('updater: HTTP errors are reported without credentials; 401 hints at update.secret', async () => {
   await withFixture(async (f, home) => {
     writeInstall(home, f.base);
@@ -431,6 +506,68 @@ test('server: update.changed goes to every window; the ready announcement goes t
     assert.equal(installs.length, 1);
     d.close();
   } finally {
+    await server.close();
+    await core.close();
+    t.cleanup();
+  }
+});
+
+test('server: update.setAuto validates, saves settings.update in the registry and lets the updater re-announce; update.download is forwarded', async () => {
+  const t = tempDir();
+  const registry = await Registry.load(t.dir);
+  const calls: SpawnCall[] = [];
+  let changed = 0;
+  let downloads = 0;
+  const status = (): Mk42UpdateStatus => ({
+    state: 'available',
+    current: CURRENT,
+    channel: 'internal',
+    latest: NEXT,
+    auto: { download: registry.settings.update?.autoDownload !== false, install: registry.settings.update?.autoInstall === true },
+  });
+  const core = new DaemonCore({
+    home: t.dir,
+    registry,
+    indexers: [new FakeIndexer('claude')],
+    launcher: fakeLauncher(t.dir, () => registry.settings, calls),
+    newId: sequenceIds(),
+    stateDebounceMs: 10,
+    mk42Update: {
+      status,
+      check: async () => status(),
+      install: async () => ({ started: false }),
+      download: async () => {
+        downloads++;
+        return { ...status(), state: 'downloading' };
+      },
+      settingsChanged: async () => {
+        changed++;
+        return status();
+      },
+    },
+  });
+  await core.start();
+  const server = new PipeServer();
+  const pipe = uniquePipeName();
+  await server.listen(pipe);
+  server.attachCore(core);
+  const a = await connectPipe(pipe);
+  try {
+    await a.hello({ role: 'hub', folderPath: 'C:\\work\\a' });
+    const r = (await a.request('update.setAuto', { download: false })) as Mk42UpdateStatus;
+    assert.deepEqual(r.auto, { download: false, install: false });
+    assert.equal(registry.settings.update?.autoDownload, false);
+    assert.equal(registry.settings.update?.autoInstall, undefined, 'only the given key is written');
+    await a.request('update.setAuto', { install: true });
+    assert.deepEqual(registry.settings.update, { autoDownload: false, autoInstall: true });
+    assert.equal(changed, 2);
+    await assert.rejects(a.request('update.setAuto', {}), /download or install/);
+    await assert.rejects(a.request('update.setAuto', { download: 'yes' } as never), /boolean/);
+    assert.equal(changed, 2, 'rejected requests change nothing');
+    assert.equal(((await a.request('update.download', {})) as Mk42UpdateStatus).state, 'downloading');
+    assert.equal(downloads, 1);
+  } finally {
+    a.close();
     await server.close();
     await core.close();
     t.cleanup();

@@ -6,6 +6,7 @@ import type {
   AgentSettings,
   Folder,
   LinkKind,
+  Mk42UpdateAuto,
   Mk42UpdateStatus,
   PinnedDefaults,
   PinnedSession,
@@ -131,6 +132,10 @@ export interface RequestMap {
   'update.check': { params: Empty; result: Mk42UpdateStatus };
   /** 받아 둔(ready) 설치 파일을 sha256을 다시 맞춘 뒤 조용한 설치로 띄워요. 설치 엔진이 이 데몬을 껐다 새 판으로 띄워요(창은 그대로) */
   'update.install': { params: Empty; result: Mk42UpdateInstallResult };
+  /** 자동 받기가 꺼져 있어 기다리는 새 판(available)을 지금 받아요 — 서명을 다시 확인한 뒤 받기는 백그라운드로(downloading → ready) */
+  'update.download': { params: Empty; result: Mk42UpdateStatus };
+  /** 자동 받기·자동 설치 설정을 바꿔요(registry.json settings.update). 자동 받기를 켤 때 available이면 바로 받아요 */
+  'update.setAuto': { params: Partial<Mk42UpdateAuto>; result: Mk42UpdateStatus };
 }
 
 export interface Mk42UpdateInstallResult {

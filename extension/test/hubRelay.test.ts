@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ErrorCode, RpcError, type DaemonApi, type HostToWebview } from '@mark42/protocol';
-import { HubRelay, hubHtml } from '../src/lib/hubRelay.ts';
+import { HubRelay, hubHtml, RELAY_MAX_TIMEOUT_MS } from '../src/lib/hubRelay.ts';
 import { koT } from './helpers/l10n.ts';
 
 function fakeApi(impl: (method: string, params: unknown) => Promise<unknown>, notes: unknown[] = []): DaemonApi {
@@ -23,6 +23,24 @@ test('rpc relayed to daemon and result posted back', async () => {
   });
   await relay.handle({ type: 'rpc', id: 7, method: 'folders.list', params: {} });
   assert.deepEqual(posted, [{ type: 'rpcResult', id: 7, result: [{ id: 'f' }] }]);
+});
+
+test('rpc: the webview timeout is used for the daemon request (capped at 15 min); none → default', async () => {
+  const seen: (number | undefined)[] = [];
+  const api: DaemonApi = {
+    request: ((_m: string, _p: unknown, timeoutMs?: number) => {
+      seen.push(timeoutMs);
+      return Promise.resolve({});
+    }) as DaemonApi['request'],
+    notify: (() => {}) as DaemonApi['notify'],
+    onNotification: () => () => {},
+  };
+  const relay = new HubRelay({ post: () => {}, api: () => api, onHostMessage: () => {} });
+  await relay.handle({ type: 'rpc', id: 1, method: 'update.check', params: {}, timeoutMs: 90_000 });
+  await relay.handle({ type: 'rpc', id: 2, method: 'folders.clone', params: {}, timeoutMs: 24 * 60 * 60_000 });
+  await relay.handle({ type: 'rpc', id: 3, method: 'folders.list', params: {} });
+  await relay.handle({ type: 'rpc', id: 4, method: 'folders.list', params: {}, timeoutMs: -5 });
+  assert.deepEqual(seen, [90_000, RELAY_MAX_TIMEOUT_MS, undefined, undefined]);
 });
 
 test('rpc errors carry code; disconnected answers immediately', async () => {

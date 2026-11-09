@@ -2,6 +2,7 @@
 // 시작 2분 뒤 한 번, 그 뒤 6시간마다, 그리고 창·통합 창의 «업데이트 확인»(update.check) 때:
 //   <url>/<channel>/latest.json + latest.json.sig 받기 → **설치된 패키지의 공개 키**(서버 것 아님)로 Ed25519 서명 확인 → 필드 엄격 확인
 //   → 설치된 판보다 높으면 <home>\updates\<file>.partial로 받기(진행 알림) → 크기·sha256 확인 → 이름 바꾸기, updates\의 다른 파일은 지워요.
+//   → settings.update.autoDownload가 false면 받지 않고 available로 기다려요(update.download = 서명을 다시 확인하고 받기). 기본 켬(D55).
 //   → ready(창 하나가 «지금 설치할까요?»를 물어요). settings.update.autoInstall이면 묻지 않고 바로 설치해요.
 // 설치 = 받은 설치 마법사를 sha256을 다시 맞춘 뒤 떨어진 프로세스로 `/SILENT /SUPPRESSMSGBOXES /NORESTART`. 마법사의 설치 엔진이
 // `$/shutdown`으로 이 데몬을 끄고 새 판을 띄워요(Mk42 창·통합 창은 닫지 않아요 — 엔진의 기존 동작).
@@ -11,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { createHash, createPublicKey, verify, type KeyObject } from 'node:crypto';
 import { createReadStream, promises as fsp } from 'node:fs';
 import { join } from 'node:path';
-import type { Mk42UpdateInstallResult, Mk42UpdateStatus } from '@mark42/protocol';
+import type { Mk42UpdateAuto, Mk42UpdateInstallResult, Mk42UpdateStatus } from '@mark42/protocol';
 import { defaultMark42Home, samePath } from '@mark42/protocol/paths';
 import { compareVersions } from './extensions.ts';
 import { atomicWriteFile, errCode, renameWithRetry } from './fsutil.ts';
@@ -213,6 +214,8 @@ export interface Mk42UpdaterOptions {
   timers?: Timers;
   /** settings.update.autoInstall — 읽을 때마다 */
   autoInstall?: () => boolean;
+  /** settings.update.autoDownload — 읽을 때마다. 없으면 켬 */
+  autoDownload?: () => boolean;
   /** 설치기 띄우기(시험에서 바꿔 끼워요). 기본: 떨어진 프로세스, 창 보임 */
   spawnInstaller?: (exe: string, args: string[]) => Promise<SpawnedInstaller>;
   onChange?: (s: Mk42UpdateStatus) => void;
@@ -311,14 +314,48 @@ export class Mk42Updater {
     this.#timer = undefined;
   }
 
+  /** 지금 상태 + 자동 받기·자동 설치 설정(읽을 때마다 — 설정을 바꾸면 settingsChanged로 다시 알려요) */
   status(): Mk42UpdateStatus {
-    return structuredClone(this.#status);
+    return { ...structuredClone(this.#status), auto: this.auto() };
+  }
+
+  auto(): Mk42UpdateAuto {
+    return { download: this.#autoDownload(), install: this.#opts.autoInstall?.() === true };
+  }
+
+  #autoDownload(): boolean {
+    return this.#opts.autoDownload?.() !== false;
   }
 
   /** 지금 확인해요(서명 확인까지 기다리고, 받기는 이어서 백그라운드). 이미 확인 중이면 그 결과를 같이 기다려요 */
   check(): Promise<Mk42UpdateStatus> {
-    this.#checking ??= this.#check().finally(() => (this.#checking = undefined));
+    this.#checking ??= this.#check(false).finally(() => (this.#checking = undefined));
     return this.#checking;
+  }
+
+  /**
+   * 자동 받기가 꺼져 있어 기다리는 새 판을 지금 받아요(update.download). 서버를 다시 확인하고(서명) 받기는 백그라운드로.
+   * 받는 중·받아 둠·설치 중·꺼짐이면 그대로. 도는 확인이 있으면 끝난 뒤에 해요(그 확인이 available로 끝났을 수 있어서).
+   */
+  async download(): Promise<Mk42UpdateStatus> {
+    if (this.#checking) await this.#checking.catch(() => undefined);
+    const s = this.#status.state;
+    if (this.#downloading || this.#installStarted() || s === 'ready' || s === 'disabled') return this.status();
+    this.#checking ??= this.#check(true).finally(() => (this.#checking = undefined));
+    return this.#checking;
+  }
+
+  /**
+   * 설정(자동 받기·자동 설치)이 바뀌었어요 — 상태를 다시 알리고, 자동 받기를 켰는데 기다리는 새 판이 있으면 받기를 **시작만** 하고 바로 답해요
+   * (update.setAuto가 서버 확인·받기를 기다리면 느린 서버에서 요청 시간이 넘어 «설정 실패»로 보여요 — 진행은 update.changed로).
+   * 도는 확인이 available로 끝나는 사이에 켠 경우는 #checkWith가 정리 뒤에 설정을 다시 읽어 받아요.
+   */
+  async settingsChanged(): Promise<Mk42UpdateStatus> {
+    this.#notify();
+    if (this.#status.state === 'available' && this.#autoDownload()) {
+      void this.download().catch((e) => this.#log?.warn(`self-update download after enabling auto download failed: ${errMsg(e)}`));
+    }
+    return this.status();
   }
 
   /** 받은 판의 받기가 끝날 때까지(시험·자동 설치용) */
@@ -398,8 +435,12 @@ export class Mk42Updater {
     for (const k of Object.keys(next) as (keyof Mk42UpdateStatus)[]) if (next[k] === undefined) delete next[k];
     if (JSON.stringify(next) === JSON.stringify(this.#status)) return;
     this.#status = next;
+    this.#notify();
+  }
+
+  #notify(): void {
     try {
-      this.#opts.onChange?.(structuredClone(next));
+      this.#opts.onChange?.(this.status());
     } catch (e) {
       this.#log?.warn(`self-update change listener failed: ${errMsg(e)}`);
     }
@@ -486,7 +527,7 @@ export class Mk42Updater {
     return m.notes?.[lang] ?? m.notes?.en ?? m.notes?.ko;
   }
 
-  async #check(): Promise<Mk42UpdateStatus> {
+  async #check(download: boolean): Promise<Mk42UpdateStatus> {
     if (this.#installStarted()) return this.status();
     const cfg = await this.#loadConfig();
     // 기다리는 동안 설치가 시작됐으면 상태를 덮지 않아요(아래 await 뒤마다 같아요)
@@ -500,13 +541,13 @@ export class Mk42Updater {
     const before = this.#status;
     this.#checkFromReady = before.state === 'ready' && this.#ready !== undefined;
     try {
-      return await this.#checkWith(cfg as { config: UpdateConfig; current: string }, before);
+      return await this.#checkWith(cfg as { config: UpdateConfig; current: string }, before, download);
     } finally {
       this.#checkFromReady = false;
     }
   }
 
-  async #checkWith(cfg: { config: UpdateConfig; current: string }, before: Mk42UpdateStatus): Promise<Mk42UpdateStatus> {
+  async #checkWith(cfg: { config: UpdateConfig; current: string }, before: Mk42UpdateStatus, download: boolean): Promise<Mk42UpdateStatus> {
     this.#set({ state: 'checking', current: cfg.current, channel: cfg.config.channel, error: undefined, progress: undefined });
     let m: LatestManifest;
     try {
@@ -527,12 +568,12 @@ export class Mk42Updater {
       this.#ready = undefined;
       await this.#prune(undefined);
       if (this.#installStarted()) return this.status();
-      this.#set({ state: 'idle', latest: m.version, notes, checkedAt }, false);
+      this.#set({ state: 'idle', latest: m.version, notes, checkedAt, size: undefined }, false);
       return this.status();
     }
     const file = join(this.updatesDir, m.file);
     if (this.#ready && this.#ready.manifest.version === m.version && this.#ready.manifest.sha256 === m.sha256) {
-      this.#set({ state: 'ready', latest: m.version, notes, checkedAt, error: this.#autoBlockedError(m) });
+      this.#set({ state: 'ready', latest: m.version, notes, checkedAt, size: m.size, error: this.#autoBlockedError(m) });
       return this.status();
     }
     // 지난 실행에서 다 받은 파일이 있으면 다시 받지 않아요(서명한 sha256과 맞을 때만)
@@ -542,7 +583,18 @@ export class Mk42Updater {
       await this.#becomeReady(m, file, notes, checkedAt);
       return this.status();
     }
-    this.#set({ state: 'downloading', latest: m.version, notes, checkedAt, progress: { received: 0, total: m.size } });
+    // 자동 받기가 꺼져 있으면 알리기만 해요(이 판을 받아 둔 게 있으면 위에서 그대로 ready). 지난 판을 받아 둔 게 있으면 새 판이 더 높아서 치워요
+    if (!download && !this.#autoDownload()) {
+      this.#ready = undefined;
+      await this.#prune(undefined);
+      if (this.#installStarted()) return this.status();
+      // 정리하는 사이에 자동 받기를 켰으면(update.setAuto — 그때 상태는 아직 checking이라 settingsChanged가 받지 않아요) 아래로 받아요
+      if (!this.#autoDownload()) {
+        this.#set({ state: 'available', latest: m.version, notes, checkedAt, size: m.size, progress: undefined });
+        return this.status();
+      }
+    }
+    this.#set({ state: 'downloading', latest: m.version, notes, checkedAt, size: m.size, progress: { received: 0, total: m.size } });
     this.#downloading = this.#download(m, file, cfg.config)
       .then(() => this.#becomeReady(m, file, notes, checkedAt))
       .catch((e) => {
@@ -562,7 +614,7 @@ export class Mk42Updater {
     if (this.#installStarted()) return;
     this.#log?.info(`self-update ${m.version} ready (${m.file}, ${(m.size / 1048576).toFixed(0)} MB, sha256 verified)`);
     const blocked = this.#autoBlockedError(m);
-    this.#set({ state: 'ready', latest: m.version, notes, checkedAt, progress: undefined, error: blocked });
+    this.#set({ state: 'ready', latest: m.version, notes, checkedAt, size: m.size, progress: undefined, error: blocked });
     if (this.#opts.autoInstall?.() === true) {
       if (blocked) {
         this.#log?.warn(`self-update: automatic install of ${m.version} did not finish last time — waiting for a manual install`);

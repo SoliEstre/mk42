@@ -96,8 +96,10 @@ export interface DaemonSettings {
   /**
    * Mk42 자체 업데이트(updater.ts, 계약 C4). 채널·주소·서명 공개 키는 설치 기록(install.json update)에서 와요 — 여기는 동작만.
    * autoInstall: 새 판을 받아 확인하면 묻지 않고 바로 조용한 설치를 띄워요. 기본 false(창이 «지금 설치할까요?»를 물어요).
+   * autoDownload: 새 판을 찾으면 바로 받아요. 기본 true(D55) — false면 available로 알리고 update.download(통합 창 «받기»)를 기다려요.
+   * 통합 창 ⚙ 메뉴가 update.setAuto로 바꿔요.
    */
-  update?: { autoInstall?: boolean };
+  update?: { autoInstall?: boolean; autoDownload?: boolean };
 }
 
 export interface RegistryData {

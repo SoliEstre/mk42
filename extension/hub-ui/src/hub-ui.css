@@ -184,8 +184,9 @@ body.m42-ws .topbar {
   margin: 0 0 10px;
   padding: 8px 0;
   border-bottom: none;
-  box-shadow: 0 0 0 100vmax #7a1018;
-  clip-path: inset(0 -100vmax);
+  /* 창 너비 끝까지 좌우로만 칠해요(border-image outset — 레이아웃·스크롤에 안 들어가요). 예전 box-shadow + clip-path는
+     머리 줄 높이로 잘라서 머리 줄 아래로 펼치는 메뉴(업데이트 ⚙)까지 잘렸어요(2026-11-09) */
+  border-image: linear-gradient(#7a1018 0 0) fill 0 / / 0 100vmax;
 }
 body.m42-ws .topbar .muted,
 body.m42-ws .topbar .conn-detail {
@@ -249,6 +250,110 @@ body.m42-ws .topbar .btn:hover:not(:disabled) {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* ---- 머리 줄 오른쪽: Mk42 업데이트(update.ts) ---- */
+.update {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 26em;
+  padding: 1px 8px;
+  border: 1px solid var(--m42-border);
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: default;
+}
+.update-pill .dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--m42-muted);
+}
+.update[data-tone='ok'] .update-pill .dot {
+  background: var(--m42-ok);
+}
+.update[data-tone='new'] .update-pill .dot {
+  background: var(--m42-accent);
+}
+.update[data-tone='busy'] .update-pill .dot {
+  background: var(--m42-warn);
+}
+.update[data-tone='error'] .update-pill .dot {
+  background: var(--m42-error);
+}
+.update[data-tone='error'] .update-text {
+  color: var(--m42-error);
+}
+.update-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.update-progress {
+  flex: none;
+  width: 6em;
+  height: 6px;
+  accent-color: var(--m42-accent);
+}
+.update-menu {
+  position: relative;
+}
+.update-menu > summary {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+.update-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.update-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 17em;
+  padding: 8px 10px;
+  color: var(--m42-fg);
+  background: var(--m42-panel);
+  border: 1px solid var(--m42-border);
+  border-radius: var(--m42-radius);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.update-menu-panel p {
+  margin: 0;
+}
+body.m42-ws .topbar .update-pill {
+  border-color: rgba(247, 205, 92, 0.5);
+  background: rgba(0, 0, 0, 0.18);
+}
+body.m42-ws .topbar .update[data-tone='new'] .update-pill .dot {
+  background: #f7cd5c;
+}
+body.m42-ws .topbar .update[data-tone='error'] .update-text {
+  color: #ffb4a8;
+}
+body.m42-ws .topbar .btn.primary {
+  background: #f7cd5c;
+  color: #7a1018;
+}
+body.m42-ws .topbar .btn.primary:hover:not(:disabled) {
+  background: #ffd970;
+}
+body.m42-ws .topbar .update-menu-panel .muted {
+  color: var(--m42-muted);
 }
 
 /* ---- 버튼·입력 ---- */
