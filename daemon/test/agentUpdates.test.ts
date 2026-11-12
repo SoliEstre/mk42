@@ -122,6 +122,8 @@ test('agent updates: launcher gives the Mk42 extension folder as the target, not
 
 interface Harness {
   downloads: number;
+  /** Claude 공급원의 최신 버전 조회 횟수(=확인 횟수) */
+  latestCalls: number;
   dir: string;
   ext: string;
   updater: AgentExtensionUpdater;
@@ -144,6 +146,7 @@ function harness(o: {
   tamperAfterInspect?: boolean;
   installed?: Record<string, string>;
   installFails?: boolean;
+  timing?: { firstDelayMs?: number; intervalMs?: number; pendingRetryMs?: number };
 }): Harness {
   const t = tempDir();
   const dir = t.dir;
@@ -161,7 +164,7 @@ function harness(o: {
     return f;
   };
   const sources: AgentExtensionSource[] = [
-    { id: CLAUDE_EXTENSION_ID, verify: true, latest: async () => o.claudeLatest ?? '2.1.314', download: download('claude') },
+    { id: CLAUDE_EXTENSION_ID, verify: true, latest: async () => (h.latestCalls++, o.claudeLatest ?? '2.1.314'), download: download('claude') },
     { id: CODEX_EXTENSION_ID, verify: false, latest: async () => o.codexLatest ?? '26.1021.22027', download: download('codex') },
   ];
   const verifier: ExtensionVerifier = {
@@ -186,6 +189,7 @@ function harness(o: {
     sources,
     verifier,
     onUpdated: (ids) => notified.push(ids),
+    ...o.timing,
     installer: {
       updateExtension: async (_req, id, latest, installArg) => {
         let arg: string;
@@ -201,7 +205,7 @@ function harness(o: {
       },
     },
   });
-  h = { downloads: 0, dir, ext, updater, installs, notified, files, cleanup: t.cleanup };
+  h = { downloads: 0, latestCalls: 0, dir, ext, updater, installs, notified, files, cleanup: t.cleanup };
   return h;
 }
 
@@ -473,5 +477,68 @@ test('agent updates: nothing installed and no release that runs on this app → 
     u.close();
   } finally {
     cleanup();
+  }
+});
+
+/** cond가 참이 될 때까지(최대 ms) — 타이머 시험용 */
+async function until(cond: () => boolean, ms = 3000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+test('schedule: a version waiting for the Marketplace build is re-checked at the short retry, then back to the normal interval', async () => {
+  let ref: Record<string, string> | undefined;
+  const h = harness({ claudeLatest: '2.1.315', reference: () => ref, timing: { firstDelayMs: 5, intervalMs: 60_000, pendingRetryMs: 20 } });
+  try {
+    h.updater.start();
+    await until(() => h.updater.status([CLAUDE_EXTENSION_ID])[0]?.status === 'pending');
+    // Marketplace에 올라오면 — 정해진 간격(60초)이 아니라 짧은 재시도 안에 대조해서 깔아요
+    ref = { 'a.js': 'h1' };
+    await until(() => h.installs.length === 1);
+    assert.equal(h.installs[0]!.latest, '2.1.315');
+    assert.equal(h.downloads, 1, 'retries do not download again');
+    // 기다리는 판이 없어지면 정해진 간격으로 돌아가요
+    await new Promise((r) => setTimeout(r, 60));
+    const calls = h.latestCalls;
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(h.latestCalls, calls, 'no more short retries');
+  } finally {
+    h.updater.close();
+    h.cleanup();
+  }
+});
+
+test('schedule: a window check that ends waiting pulls the timer forward to the short retry; nothing waiting keeps the timer', async () => {
+  let ref: Record<string, string> | undefined;
+  const h = harness({ claudeLatest: '2.1.315', reference: () => ref, timing: { firstDelayMs: 60_000, intervalMs: 60_000, pendingRetryMs: 20 } });
+  try {
+    h.updater.start();
+    const [u] = await h.updater.check({ ids: [CLAUDE_EXTENSION_ID], manual: true });
+    assert.equal(u!.status, 'pending');
+    ref = { 'a.js': 'h1' };
+    await until(() => h.installs.length === 1);
+    // 이제 기다리는 판이 없어요 — 창 확인이 타이머를 당기지 않아요
+    const calls = h.latestCalls;
+    await h.updater.check({ ids: [CLAUDE_EXTENSION_ID], manual: true });
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(h.latestCalls, calls + 1, 'only the window check itself');
+  } finally {
+    h.updater.close();
+    h.cleanup();
+  }
+});
+
+test('schedule: a retry longer than the interval falls back to the interval', async () => {
+  const h = harness({ claudeLatest: '2.1.315', timing: { firstDelayMs: 5, intervalMs: 20, pendingRetryMs: 60_000 } });
+  try {
+    h.updater.start();
+    await until(() => h.latestCalls >= 3);
+    assert.equal(h.updater.status([CLAUDE_EXTENSION_ID])[0]?.status, 'pending');
+  } finally {
+    h.updater.close();
+    h.cleanup();
   }
 });

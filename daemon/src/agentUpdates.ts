@@ -1,4 +1,4 @@
-// 에이전트 확장 업데이트 (Mk42). 데몬이 시작 몇 분 뒤와 6시간마다, 그리고 창의 «업데이트 확인» 요청 때 최신 정식판을 확인해
+// 에이전트 확장 업데이트 (Mk42). 데몬이 시작 몇 분 뒤와 1시간마다(기준을 기다리는 판이 있으면 30분마다), 그리고 창의 «업데이트 확인» 요청 때 최신 정식판을 확인해
 // 더 높으면(또는 빠졌으면) Mk42 확장 폴더에 깔아요. 떠 있는 창은 그대로 옛 버전을 쓰고, 창의 «업데이트 적용» 때 새 버전으로 바뀌어요.
 // - Claude Code·Codex: Open VSX(Mk42 갤러리)에서 받되 **검증한 뒤에만** 깔아요(extVerify.ts) — 받은 VSIX를 시험 폴더에 깔아
 //   해시하고(ID·버전도 확인), 같은 버전의 기준 해시(ReferenceSource)와 같으면 **그 파일**로 깔아요(받은 바이트의 sha256을 고정해 두고
@@ -20,8 +20,11 @@ import { errMsg, type Logger } from './log.ts';
 import { downloadOpenVsxVsix, latestOpenVsxVersion } from './gallery.ts';
 
 const TARGET_PLATFORM = galleryTargetPlatform();
-const DEFAULT_INTERVAL_MS = 6 * 60 * 60_000;
+/** 정해진 확인 간격 — 새 판이 없으면 버전 조회 한 번뿐이라(받기는 새 판일 때만) 짧게 둬요 */
+const DEFAULT_INTERVAL_MS = 60 * 60_000;
 const DEFAULT_FIRST_DELAY_MS = 3 * 60_000;
+/** 기준이 없어 확인을 기다리는 판이 있을 때 — Marketplace가 Open VSX보다 늦게 올라오면 그만큼 빨리 다시 대조해요(받은 파일은 그대로) */
+const DEFAULT_PENDING_RETRY_MS = 30 * 60_000;
 
 /** Mk42 확장 폴더 설치 대상 + 앱 버전(엔진 호환 확인) */
 export type AgentUpdateTarget = EnsureRequest & { appVersion?: string };
@@ -81,6 +84,8 @@ export interface AgentExtensionUpdaterOptions {
   sources?: readonly AgentExtensionSource[];
   intervalMs?: number;
   firstDelayMs?: number;
+  /** 확인을 기다리는 판이 있을 때의 간격(intervalMs보다 길면 intervalMs) */
+  pendingRetryMs?: number;
 }
 
 export interface AgentUpdateCheck {
@@ -111,10 +116,12 @@ export class AgentExtensionUpdater {
   #running = new Map<string, Promise<AgentExtensionUpdate[]>>();
   /** 확장마다 한 번에 하나 */
   #locks = new Map<string, Promise<unknown>>();
-  /** 정해진 확인에서 깔리지 않은·막힌 버전 — 같은 버전이면 다시 받지 않아요(엔진 비호환 등으로 수백 MB를 6시간마다 받지 않게) */
+  /** 정해진 확인에서 깔리지 않은·막힌 버전 — 같은 버전이면 다시 받지 않아요(엔진 비호환 등으로 수백 MB를 정해진 확인마다 받지 않게) */
   #failed = new Map<string, string>();
   #state = new Map<string, ExtState>();
   #timer: ReturnType<typeof setTimeout> | undefined;
+  /** 걸어 둔 타이머가 울릴 때(performance.now 기준 — 타이머와 같은 단조 시계라 벽시계가 바뀌어도 어긋나지 않아요) */
+  #timerDue = 0;
   #closed = false;
   #seq = 0;
 
@@ -148,7 +155,10 @@ export class AgentExtensionUpdater {
     const key = `${req.manual ? 'm' : 'a'}|${sources.map((s) => s.id).join(',')}`;
     let p = this.#running.get(key);
     if (!p) {
-      p = this.#check(sources, req.manual === true).finally(() => this.#running.delete(key));
+      p = this.#check(sources, req.manual === true).finally(() => {
+        this.#running.delete(key);
+        this.#pullTimerForward();
+      });
       this.#running.set(key, p);
     }
     return p;
@@ -198,13 +208,36 @@ export class AgentExtensionUpdater {
 
   #schedule(ms: number): void {
     if (this.#closed) return;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timerDue = performance.now() + ms;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       void this.check()
         .catch((e) => this.#opts.log?.warn(`agent extension update check failed: ${errMsg(e)}`))
-        .finally(() => this.#schedule(this.#opts.intervalMs ?? DEFAULT_INTERVAL_MS));
+        .finally(() => this.#schedule(this.#nextDelay()));
     }, ms);
     this.#timer.unref?.();
+  }
+
+  /** 확인을 기다리는 판이 있으면 더 자주(기준이 생겼는지만 다시 봐요), 아니면 정해진 간격 */
+  #nextDelay(): number {
+    const interval = this.#opts.intervalMs ?? DEFAULT_INTERVAL_MS;
+    return this.#waitingForReference() ? Math.min(interval, this.#opts.pendingRetryMs ?? DEFAULT_PENDING_RETRY_MS) : interval;
+  }
+
+  #waitingForReference(): boolean {
+    for (const st of this.#state.values()) if (st.candidate) return true;
+    return false;
+  }
+
+  /**
+   * 창이 부른 확인(정해진 타이머 밖)이 «확인 대기»로 끝났으면, 걸어 둔 타이머가 더 늦을 때 다시 대조할 시점으로 당겨요.
+   * 정해진 확인이 도는 중(타이머 없음)이면 그 확인이 끝나며 알아서 정해요.
+   */
+  #pullTimerForward(): void {
+    if (this.#closed || !this.#timer || !this.#waitingForReference()) return;
+    const ms = this.#nextDelay();
+    if (this.#timerDue - performance.now() > ms) this.#schedule(ms);
   }
 
   #verifier(target: AgentUpdateTarget): ExtensionVerifier {
