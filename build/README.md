@@ -8,7 +8,7 @@
 | `product.overlay.json` | `product.json`에 합치는 값 — 이름(`Mk42.exe`·«Mark42»), 데이터 폴더 `.mk42`, `mark42://`, Open VSX, Codex API 제안 허용, `quality: stable`, 내장 Copilot 계정 무력화. `null`은 키 지우기 |
 | `patches/*.patch` | 업스트림 소스 패치(아래) |
 | `scripts/apply.mjs` | 작업 폴더 확인 → 패치 적용(이미 적용된 건 건너뜀) → overlay 합치기 → Mk42 아이콘. `--check`는 상태만 |
-| `scripts/build.ps1` | Build Tools 개발자 셸 → apply → `npm ci` → `npm run gulp vscode-win32-x64-min` → `<작업 폴더의 부모>\VSCode-win32-x64\Mk42.exe` |
+| `scripts/build.ps1` | Build Tools 개발자 셸 → apply → 패키지 설치(업스트림이 pnpm이면 `corepack pnpm install --frozen-lockfile`, 1.145 이하는 `npm ci`) → `gulp vscode-win32-x64-min` → `<작업 폴더의 부모>\VSCode-win32-x64\Mk42.exe`. `-SkipInstall`은 설치 건너뛰기 |
 | `scripts/install.ps1` | (개발용) 빌드한 앱을 `%LOCALAPPDATA%\Mark42\app\Mk42-<태그>-<커밋>`에 복사만 |
 | `scripts/package.mjs` | **설치 패키지** — 아래 «설치 패키지» |
 | `installer/mk42.iss` | 설치 마법사(Inno Setup 6) — `package.mjs --exe`가 컴파일 |
@@ -47,4 +47,4 @@ node build\scripts\package.mjs [--app <Mk42 앱 폴더>] [--app-version <태그-
 
 ## 준비물
 
-Node 24.x(업스트림 `.nvmrc` 24.18.0 이상), Python 3, **VS 2026 Build Tools(C++ 워크로드 + 스펙터 완화 라이브러리)** — Community 설치에는 스펙터 라이브러리가 없어서 `build.ps1`이 Build Tools 개발자 셸을 써요. Git. Rust·7-Zip은 필요 없어요(업스트림 설치기·CLI를 만들지 않아요). 설치 마법사(`package.mjs --exe`)에는 Inno Setup 6이 필요해요.
+Node 24.x(업스트림 `.nvmrc` — 1.146.0은 24.22.1 이상, corepack 포함 — pnpm은 corepack이 `packageManager` 판으로 받아요), Python 3, **VS 2026 Build Tools(C++ 워크로드 + 스펙터 완화 라이브러리)** — Community 설치에는 스펙터 라이브러리가 없어서 `build.ps1`이 Build Tools 개발자 셸을 써요. Git. Rust·7-Zip은 필요 없어요(업스트림 설치기·CLI를 만들지 않아요). 설치 마법사(`package.mjs --exe`)에는 Inno Setup 6이 필요해요.
