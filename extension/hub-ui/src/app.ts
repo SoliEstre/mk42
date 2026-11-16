@@ -11,7 +11,7 @@ import type {
   SessionTasks,
   TokenUsage,
 } from '@mark42/protocol';
-import { AGENT_ROLES, parseCloneUrl, PINNED_GROUP_MAX } from '@mark42/protocol';
+import { AGENT_ROLES, modelEffortText, parseCloneUrl, PINNED_GROUP_MAX } from '@mark42/protocol';
 import { ANCHOR_TTL_MS, anchorElement, Bubble, type Anchor } from './bubble.ts';
 import { clear, confirmButton, el } from './dom.ts';
 import { canPickFolder, isAbsoluteWinPath, looksLikeRepoAddress, pickFolder, pushRecentFolder } from './host-bridge.ts';
@@ -1626,6 +1626,9 @@ export class HubApp {
       el('span', { cls: 'task-agent-label', attrs: { title: `${a.label}\n${a.id}` }, text: a.label || a.id }),
       showPhase && a.phase ? el('span', { cls: 'chip', attrs: { title: t('tasks.phase') }, text: a.phase }) : null,
       a.kind ? el('span', { cls: 'chip sub', attrs: { title: t('tasks.kind') }, text: a.kind }) : null,
+      modelEffortText(a)
+        ? el('span', { cls: 'chip sub', attrs: { title: [t('tasks.model'), a.model, a.effort].filter(Boolean).join(' · ') }, text: modelEffortText(a) })
+        : null,
       el('span', { cls: 'task-agent-meta' }, this.#tokens(a.tokens), this.#elapsed(a)),
     );
     const activity = a.activity?.trim()

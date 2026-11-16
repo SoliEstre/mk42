@@ -227,6 +227,29 @@ export interface BackgroundAgent {
   activity?: string;
   /** 결과 요약 앞 300자(워크플로우 result.summary 등, 있을 때만) */
   summary?: string;
+  /** 마지막 응답의 모델 id(claude-opus-5-5 · gpt-6-luna) — 옛 데몬·기록에 없으면 없음 */
+  model?: string;
+  /** 추론 강도(low·medium·high·xhigh·max) */
+  effort?: string;
+}
+
+/** 세션이 띄운 터미널 명령 하나(Claude Bash·PowerShell 도구) — 명령 전문은 싣지 않고 모델이 붙인 설명만 */
+export interface BackgroundRun {
+  /** 도구 호출 id(toolu_…) */
+  id: string;
+  /** 명령에 붙은 설명(description). 없으면 도구 이름 */
+  label: string;
+  /** Bash · PowerShell */
+  tool: string;
+  /** 백그라운드 실행(run_in_background 또는 도중에 백그라운드로 넘어감) */
+  background: boolean;
+  /** 백그라운드 작업 id(끝남 알림과 맞춰요) */
+  taskId?: string;
+  status: BackgroundTaskStatus;
+  /** ISO-8601 */
+  startedAt: string;
+  endedAt?: string;
+  updatedAt: string;
 }
 
 /** Claude Code 워크플로우 실행 하나 */
@@ -256,7 +279,9 @@ export interface SessionTasks {
   workflows: BackgroundWorkflow[];
   /** 워크플로우 밖 서브에이전트(Claude Task 도구) / Codex 하위 스레드 */
   subagents: BackgroundAgent[];
-  /** 실행 중인 agent 수(워크플로우 포함) */
+  /** 터미널 명령(Claude만, 실행 중 먼저 — 옛 데몬은 없음) */
+  runs?: BackgroundRun[];
+  /** 실행 중인 agent 수(워크플로우 포함 — 터미널 명령은 세지 않아요) */
   running: number;
   tokens: TokenUsage;
   updatedAt: string;

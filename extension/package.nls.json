@@ -33,5 +33,6 @@
   "command.agentUpdate.unverified": "Unverified New Agent Extension Version — Confirm Whether to Install",
   "command.update.check": "Check for Mk42 Updates",
   "view.sessions": "Sessions",
-  "view.tasks": "Tasks"
+  "view.tasks": "Tasks",
+  "view.runs": "Runs"
 }

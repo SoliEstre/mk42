@@ -3,16 +3,19 @@
 // 웹뷰는 확장이 만든(모두 이스케이프한) HTML만 그려요. 문서는 보일 때 한 번 쓰고, 그다음엔 본문만 메시지로 바꿔 끼워요 — 통째로
 // 다시 쓰면 실행 중 몇 초마다 스크롤이 처음으로 가요. 스크립트는 nonce 하나(본문 바꾸기·펼침 기억·포커스 유지)뿐이고 명령 URI·로컬 파일은 막아요.
 // 데이터: 데몬 tasks.list(이 창이 든 세션만) — state.changed {topics:['tasks']}와 세션이 바뀔 때 다시 읽어요.
+// Claude 창에는 «실행» 보기도 있어요 — 같은 데이터의 터미널 명령(설명·실행 시간)을 보여 줘요. 두 보기 모두 높이를 내용에 맞춰요.
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import type { AgentKind, BackgroundAgent, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks } from '@mark42/protocol';
+import type { AgentKind, BackgroundAgent, BackgroundRun, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks } from '@mark42/protocol';
 import type { DaemonClient } from './daemonClient.ts';
 import {
   currentPhaseIndex,
   elapsedMs,
   formatDuration,
   formatTokens,
+  modelText,
   progressRatio,
+  runningRuns,
   sortAgents,
   statusLabel,
   TASK_STATUSES,
@@ -26,6 +29,11 @@ import type { Logger } from './log.ts';
 
 /** package.json views — 각 에이전트 확장의 보조 사이드바 컨테이너에 넣어요(이 창 에이전트 것만 when으로 보여요) */
 export const TASKS_VIEW_IDS: Record<AgentKind, string> = { claude: 'mark42.tasks.claude', codex: 'mark42.tasks.codex' };
+/** «실행»(터미널 명령) 보기 — Claude만(Codex 기록에는 명령 설명이 없어요) */
+export const RUNS_VIEW_IDS: Partial<Record<AgentKind, string>> = { claude: 'mark42.runs.claude' };
+const RUNS_VIEW_SET = new Set(Object.values(RUNS_VIEW_IDS));
+/** 보기 종류 — 작업(워크플로우·서브에이전트) / 실행(터미널 명령) */
+export type TasksPane = 'tasks' | 'runs';
 export const AGENT_KIND_CONTEXT = 'mark42.agentKind';
 /** state.changed가 몰려도 1초에 한 번만 다시 읽어요 */
 const THROTTLE_MS = 1000;
@@ -34,8 +42,8 @@ const TICK_MS = 5000;
 
 type TasksDaemon = Pick<DaemonClient, 'api' | 'state' | 'onStateChange'>;
 
-/** 보기에 그릴 것 — 안내 한 줄이거나 작업 목록 */
-export type TasksViewModel = { message: string } | { tasks: SessionTasks; now: number };
+/** 보기에 그릴 것 — 안내 한 줄이거나 작업 목록이거나 터미널 명령 목록 */
+export type TasksViewModel = { message: string } | { tasks: SessionTasks; now: number } | { runs: readonly BackgroundRun[]; now: number };
 
 export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposable {
   #daemon: TasksDaemon;
@@ -78,7 +86,7 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     this.#status.name = vscode.l10n.t('Mark42 background tasks');
     this.#subs.push(
       this.#status,
-      ...Object.values(TASKS_VIEW_IDS).map((id) => vscode.window.registerWebviewViewProvider(id, this)),
+      ...[...Object.values(TASKS_VIEW_IDS), ...RUNS_VIEW_SET].map((id) => vscode.window.registerWebviewViewProvider(id, this)),
       // 끊기면 바로 실행 중 표시를 거두고, 붙으면 다시 읽어요
       o.daemon.onStateChange(() => {
         this.#render();
@@ -178,7 +186,12 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     return agent;
   }
 
-  model(): TasksViewModel {
+  /** 이 보기가 «실행» 보기인지 */
+  #paneOf(view: vscode.WebviewView): TasksPane {
+    return RUNS_VIEW_SET.has(view.viewType) ? 'runs' : 'tasks';
+  }
+
+  model(pane: TasksPane = 'tasks'): TasksViewModel {
     const agent = this.#agent();
     if (!agent) return { message: vscode.l10n.t('Tasks are shown only in agent windows.') };
     if (!this.#daemon.api) {
@@ -189,6 +202,15 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     if (this.#error && this.#for === sessionId) return { message: vscode.l10n.t('Could not load the task list.') };
     if (!this.#loaded || this.#for !== sessionId) return { message: vscode.l10n.t('Loading…') };
     const t = this.#current();
+    if (pane === 'runs') {
+      const runs = t?.runs ?? [];
+      if (runs.length === 0) {
+        return {
+          message: `${vscode.l10n.t('No terminal commands in this session yet.')}\n${vscode.l10n.t('Commands Claude runs in the terminal appear here with their description and run time.')}`,
+        };
+      }
+      return { runs, now: this.#now() };
+    }
     if (!t || (t.workflows.length === 0 && t.subagents.length === 0)) {
       return {
         message: `${vscode.l10n.t('This session has no background tasks.')}\n${vscode.l10n.t('Workflows and subagents appear here when you run them.')}`,
@@ -206,7 +228,7 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     entry.subs.push(
       view.onDidChangeVisibility(() => {
         if (!view.visible) entry.shell = false;
-        else this.#renderView(view, this.model());
+        else this.#renderView(view, this.model(this.#paneOf(view)));
         this.#syncTick();
       }),
       view.onDidDispose(() => {
@@ -256,11 +278,15 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     } else {
       this.#status.hide();
     }
-    const model = this.model();
+    const models = new Map<TasksPane, TasksViewModel>();
+    const modelFor = (pane: TasksPane) => models.get(pane) ?? models.set(pane, this.model(pane)).get(pane)!;
+    const runs = this.#runningRuns();
     for (const view of this.#views.keys()) {
-      view.badge = totals.running > 0 ? { value: totals.running, tooltip: l10nT('{0} running', totals.running) } : undefined;
-      view.description = totalsText(totals, l10nT) || undefined;
-      if (view.visible) this.#renderView(view, model);
+      const pane = this.#paneOf(view);
+      const n = pane === 'runs' ? runs : totals.running;
+      view.badge = n > 0 ? { value: n, tooltip: l10nT('{0} running', n) } : undefined;
+      view.description = (pane === 'runs' ? (runs > 0 ? l10nT('{0} running', runs) : '') : totalsText(totals, l10nT)) || undefined;
+      if (view.visible) this.#renderView(view, modelFor(pane));
     }
     this.#syncTick();
   }
@@ -280,13 +306,17 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     void view.webview.postMessage({ body });
   }
 
+  /** 이 창 세션에서 실행 중인 터미널 명령 수 */
+  #runningRuns(): number {
+    return this.#agent() ? runningRuns(this.#current()) : 0;
+  }
+
   /** 실행 중이고 보이는 보기가 있을 때만 걸린 시간을 새로 그려요 */
   #syncTick(): void {
-    const need = !this.#disposed && this.totals.running > 0 && [...this.#views.keys()].some((v) => v.visible);
+    const need = !this.#disposed && (this.totals.running > 0 || this.#runningRuns() > 0) && [...this.#views.keys()].some((v) => v.visible);
     if (need && !this.#tick) {
       this.#tick = setInterval(() => {
-        const model = this.model();
-        for (const v of this.#views.keys()) if (v.visible) this.#renderView(v, model);
+        for (const v of this.#views.keys()) if (v.visible) this.#renderView(v, this.model(this.#paneOf(v)));
       }, TICK_MS);
     } else if (!need && this.#tick) {
       clearInterval(this.#tick);
@@ -350,6 +380,9 @@ ul.agents { list-style: none; margin: 2px 0 0; padding: 0; }
 .kind { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
 .l2, .act { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act { font-family: var(--vscode-editor-font-family, monospace); opacity: .85; }
+.mdl { color: var(--vscode-descriptionForeground); }
+.el { font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.runs .st-running .el { color: var(--vscode-foreground); }
 .ic { width: 14px; flex: none; text-align: center; display: inline-block; }
 .ic::before { display: inline-block; }
 .st-running > .ic::before, .st-running > .head > .ic::before { content: '\\25D0'; color: var(--vscode-progressBar-background); animation: spin 1.2s linear infinite; }
@@ -363,12 +396,13 @@ ul.agents { list-style: none; margin: 2px 0 0; padding: 0; }
 
 /** 본문 — 문서가 뜬 뒤에는 이것만 메시지로 보내요 */
 export function renderTasksBody(model: TasksViewModel): string {
-  return 'message' in model
-    ? `<div class="empty">${model.message
-        .split('\n')
-        .map((l) => `<p>${esc(l)}</p>`)
-        .join('')}</div>`
-    : renderTasks(model.tasks, model.now);
+  if ('message' in model) {
+    return `<div class="empty">${model.message
+      .split('\n')
+      .map((l) => `<p>${esc(l)}</p>`)
+      .join('')}</div>`;
+  }
+  return 'runs' in model ? renderRuns(model.runs, model.now) : renderTasks(model.tasks, model.now);
 }
 
 /**
@@ -562,7 +596,10 @@ function renderAgent(a: BackgroundAgent, now: number): string {
   const st = statusOf(a.status);
   const elapsed = formatDuration(elapsedMs(a, now), l10nT);
   const label = statusLabel(st, l10nT);
+  const mt = modelText(a);
+  const mtTitle = [a.model, a.effort ? l10nT('effort {0}', a.effort) : undefined].filter(Boolean).join(' · ');
   const l2 = [
+    mt ? `<span class="mdl" title="${esc(mtTitle)}">${esc(mt)}</span>` : undefined,
     a.phase ? esc(a.phase) : undefined,
     a.tokens?.total ? `<span title="${esc(tokensDetail(a.tokens, l10nT))}">${esc(formatTokens(a.tokens.total))}</span>` : undefined,
     elapsed ? esc(elapsed) : undefined,
@@ -574,6 +611,35 @@ function renderAgent(a: BackgroundAgent, now: number): string {
     `<div class="l1"><span class="label">${esc(a.label || a.id)}</span>${a.kind ? `<span class="kind">${esc(a.kind)}</span>` : ''}</div>` +
     (l2.length ? `<div class="l2">${l2.join(' · ')}</div>` : '') +
     (a.activity ? `<div class="act">${esc(a.activity)}</div>` : '') +
+    `</div></li>`
+  );
+}
+
+/** «실행» 보기 — 실행 중인 명령(위), 끝난 명령(접을 수 있게). 데몬이 실행 중 먼저·최근 순으로 줘요 */
+function renderRuns(runs: readonly BackgroundRun[], now: number): string {
+  const running = runs.filter((r) => statusOf(r.status) === 'running');
+  const ended = runs.filter((r) => statusOf(r.status) !== 'running');
+  let html = '<section class="runs">';
+  if (running.length) html += `<ul class="agents">${running.map((r) => renderRun(r, now)).join('')}</ul>`;
+  if (ended.length) {
+    html +=
+      `<details data-key="runs-ended"${running.length ? '' : ' open'}><summary>${esc(l10nT('{0} ended', ended.length))}</summary>` +
+      `<ul class="agents">${ended.map((r) => renderRun(r, now)).join('')}</ul></details>`;
+  }
+  return `${html}</section>`;
+}
+
+function renderRun(r: BackgroundRun, now: number): string {
+  const st = statusOf(r.status);
+  // 끝 시각을 모르는 stale은 걸린 시간도 몰라요(«0초»로 보이지 않게)
+  const elapsed = st === 'stale' && !r.endedAt ? '' : formatDuration(elapsedMs(r, now), l10nT);
+  const label = statusLabel(st, l10nT);
+  const l2 = [esc(r.tool), r.background ? esc(l10nT('background')) : undefined, st !== 'running' ? `<span class="stl">${esc(label)}</span>` : undefined].filter(Boolean);
+  return (
+    `<li class="ag st-${st}">` +
+    `<span class="ic" title="${esc(label)}"></span><div class="main">` +
+    `<div class="l1"><span class="label" title="${esc(r.label)}">${esc(r.label || r.tool)}</span>${elapsed ? `<span class="el">${esc(elapsed)}</span>` : ''}</div>` +
+    `<div class="l2">${l2.join(' · ')}</div>` +
     `</div></li>`
   );
 }

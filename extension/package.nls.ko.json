@@ -33,5 +33,6 @@
   "command.agentUpdate.unverified": "검증 안 된 에이전트 확장 새 버전 — 설치할지 확인",
   "command.update.check": "Mk42 업데이트 확인",
   "view.sessions": "세션",
-  "view.tasks": "작업"
+  "view.tasks": "작업",
+  "view.runs": "실행"
 }

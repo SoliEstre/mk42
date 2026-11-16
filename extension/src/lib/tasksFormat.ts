@@ -124,3 +124,11 @@ export function sortAgents(list: readonly BackgroundAgent[]): BackgroundAgent[] 
     )
     .map((x) => x.a);
 }
+
+/** 모델 표시(공용) — 작업 보기에서 이 이름으로 써요 */
+export { modelEffortText as modelText, shortModelName as shortModel } from '@mark42/protocol';
+
+/** 실행 중인 터미널 명령 수(«실행» 보기 배지) */
+export function runningRuns(t: SessionTasks | undefined): number {
+  return t?.runs?.filter((r) => r.status === 'running').length ?? 0;
+}

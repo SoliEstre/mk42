@@ -15,7 +15,7 @@ registerHooks({
   },
 });
 const vs = (await import(stubUrl)) as typeof import('./helpers/vscode-stub.ts');
-const { TasksMonitor, TASKS_VIEW_IDS, AGENT_KIND_CONTEXT, FIT_HEIGHT_COMMAND, renderTasksHtml, renderTasksBody } =(await import('../src/tasksView.ts')) as typeof import('../src/tasksView.ts');
+const { TasksMonitor, TASKS_VIEW_IDS, RUNS_VIEW_IDS, AGENT_KIND_CONTEXT, FIT_HEIGHT_COMMAND, renderTasksHtml, renderTasksBody } =(await import('../src/tasksView.ts')) as typeof import('../src/tasksView.ts');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {}, show() {} };
 const SID = '0b6c4f7e-1111-2222-3333-444455556666';
@@ -486,4 +486,53 @@ test('tasks script: reports its content height after each swap', async () => {
   await settle(20);
   const heights = s.posted.filter((p) => (p as { type?: string }).type === 'height') as { px: number }[];
   assert.ok(heights.length > first && heights.at(-1)!.px > heights[0]!.px, 'taller content, larger height');
+});
+
+test('runs: the Claude window gets a «실행» view — running commands with description and elapsed time, badge counts running commands, labels escaped', async () => {
+  const runs = [
+    { id: 't1', label: 'Build <app>', tool: 'Bash', background: true, taskId: 'k1', status: 'running' as const, startedAt: '2026-10-30T10:05:00Z', updatedAt: '2026-10-30T10:05:00Z' },
+    { id: 't2', label: 'Run tests', tool: 'PowerShell', background: false, status: 'failed' as const, startedAt: '2026-10-30T10:00:00Z', endedAt: '2026-10-30T10:00:42Z', updatedAt: '2026-10-30T10:00:42Z' },
+  ];
+  const { m } = monitor({ agent: 'claude', reply: (p) => [{ ...tasksFor(p.sessionId), runs }] });
+  try {
+    assert.ok(vs.state.webviewViewProviders.has(RUNS_VIEW_IDS.claude!), 'runs view provider');
+    assert.equal(RUNS_VIEW_IDS.codex, undefined, 'Codex has no runs view');
+    const view = vs.createWebviewView(RUNS_VIEW_IDS.claude!);
+    m.resolveWebviewView(view as never);
+    await settle();
+    assert.deepEqual(view.badge, { value: 1, tooltip: '1 실행 중' }, 'running commands, not background agents');
+    assert.equal(view.description, '1 실행 중');
+    const html = view.webview.html;
+    assert.match(html, /Build &lt;app&gt;/);
+    assert.match(html, /<span class="el">5분<\/span>/, 'running command counts to now');
+    assert.match(html, /백그라운드/);
+    assert.match(html, /42초/);
+    assert.match(html, /PowerShell · <span class="stl">실패<\/span>/);
+    assert.doesNotMatch(html, /review &lt;script&gt;/, 'no workflows in the runs view');
+    // 작업 보기에는 명령이 없어요
+    const tasks = vs.createWebviewView(TASKS_VIEW_IDS.claude);
+    m.resolveWebviewView(tasks as never);
+    await settle();
+    assert.doesNotMatch(tasks.webview.html, /Build &lt;app&gt;/);
+  } finally {
+    m.dispose();
+  }
+});
+
+test('runs: a session without commands shows a message; tasks rows show model · effort', async () => {
+  const base = tasksFor(SID);
+  const agents = base.subagents.map((a, i) => (i === 0 ? { ...a, model: 'claude-opus-5-5', effort: 'high' } : a));
+  const { m } = monitor({ agent: 'claude', reply: (p) => [{ ...tasksFor(p.sessionId), subagents: agents }] });
+  try {
+    const view = vs.createWebviewView(RUNS_VIEW_IDS.claude!);
+    m.resolveWebviewView(view as never);
+    const tasks = vs.createWebviewView(TASKS_VIEW_IDS.claude);
+    m.resolveWebviewView(tasks as never);
+    await settle();
+    assert.match(view.webview.html, /이 세션에서 실행한 터미널 명령이 아직 없어요/);
+    assert.equal(view.badge, undefined);
+    assert.match(tasks.webview.html, /<span class="mdl" title="claude-opus-5-5 · effort high">Opus 5.5 · high<\/span>/);
+  } finally {
+    m.dispose();
+  }
 });

@@ -1,8 +1,8 @@
 diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
-index accd13df..433f47e0 100644
+index f1875976b7..ac1b5ff048 100644
 --- a/build/gulpfile.vscode.ts
 +++ b/build/gulpfile.vscode.ts
-@@ -244,11 +244,12 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+@@ -250,11 +250,12 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
  			.pipe(filter(depFilterPattern))
  			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, '.moduleignore')))
  			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, `.moduleignore.${process.platform}`)));
@@ -18,7 +18,7 @@ index accd13df..433f47e0 100644
  			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
  			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
  			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
-@@ -420,8 +421,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+@@ -426,8 +427,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
  				.pipe(replace('@@VERSIONFOLDER@@', versionedResourcesFolder ? `${versionedResourcesFolder}\\` : ''))
  				.pipe(rename(product.nameShort + '.VisualElementsManifest.xml')));
  
@@ -29,7 +29,7 @@ index accd13df..433f47e0 100644
  				.pipe(es.through(function (file) {
  					file.contents = Buffer.from(renderCopilotShimLauncher(file.contents.toString('utf8'), {
  						commit: String(commit),
-@@ -437,7 +438,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+@@ -443,7 +444,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
  			result = es.merge(result, gulp.src('.build/policies/win32/**', { base: '.build/policies/win32' })
  				.pipe(rename(f => f.dirname = `policies/${f.dirname}`)));
  
@@ -39,7 +39,7 @@ index accd13df..433f47e0 100644
  				result = es.merge(result, gulp.src('.build/win32/appx/**', { base: '.build/win32' }));
  				const rawVersion = version.replace(/-\w+$/, '').split('.');
  				const appxVersion = `${rawVersion[0]}.0.${rawVersion[1]}.${rawVersion[2]}`;
-@@ -529,11 +531,11 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
+@@ -535,11 +537,11 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
  			await rcedit(fullPath, {
  				'file-version': baseVersion,
  				'version-string': {
@@ -53,7 +53,7 @@ index accd13df..433f47e0 100644
  					'OriginalFilename': basename,
  					'ProductName': product.nameLong,
  					'ProductVersion': packageJson.version,
-@@ -598,7 +600,7 @@ BUILD_TARGETS.forEach(buildTarget => {
+@@ -604,7 +606,7 @@ BUILD_TARGETS.forEach(buildTarget => {
  			compileNativeExtensionsBuildTask,
  			util.rimraf(path.join(buildRoot, destinationFolderName)),
  			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
@@ -62,7 +62,7 @@ index accd13df..433f47e0 100644
  		];
  
  		if (platform === 'win32') {
-@@ -625,7 +627,6 @@ BUILD_TARGETS.forEach(buildTarget => {
+@@ -631,7 +633,6 @@ BUILD_TARGETS.forEach(buildTarget => {
  			copyCodiconsTask,
  			cleanExtensionsBuildTask,
  			compileNonNativeExtensionsBuildTask,
@@ -71,10 +71,10 @@ index accd13df..433f47e0 100644
  			writeISODate('out-build'),
  			esbuildBundleTask,
 diff --git a/build/lib/electron.ts b/build/lib/electron.ts
-index 27151cc4..a5efaaa9 100644
+index 3a55d04b82..f78fff0f2d 100644
 --- a/build/lib/electron.ts
 +++ b/build/lib/electron.ts
-@@ -143,8 +143,8 @@ const electronAssetResolver = electronFeed
+@@ -157,8 +157,8 @@ const electronAssetResolver = electronFeed
  export const config = {
  	version: electronVersion,
  	productAppName: product.nameLong,
@@ -86,10 +86,10 @@ index 27151cc4..a5efaaa9 100644
  	darwinIcon: 'resources/darwin/code.icns',
  	darwinBundleIdentifier: product.darwinBundleIdentifier,
 diff --git a/build/lib/extensions.ts b/build/lib/extensions.ts
-index 10bd9fbd..6b97c420 100644
+index d440640f34..f1d9ff6dac 100644
 --- a/build/lib/extensions.ts
 +++ b/build/lib/extensions.ts
-@@ -317,6 +317,19 @@ const nativeExtensions = [
+@@ -338,6 +338,19 @@ const nativeExtensions = [
  
  const excludedExtensions = [
  	'copilot',
@@ -110,7 +110,7 @@ index 10bd9fbd..6b97c420 100644
  	'vscode-colorize-tests',
  	'vscode-colorize-perf-tests',
 diff --git a/build/lib/nodeCompileCache.ts b/build/lib/nodeCompileCache.ts
-index 988dc11a..7d202d40 100644
+index 66dfaf4c1b..b0cb587230 100644
 --- a/build/lib/nodeCompileCache.ts
 +++ b/build/lib/nodeCompileCache.ts
 @@ -8,7 +8,8 @@ import * as fs from 'fs';
@@ -124,10 +124,10 @@ index 988dc11a..7d202d40 100644
  const nodeCompileCacheEntryPattern = /^[0-9a-f]{8}$/;
  
 diff --git a/src/vs/base/node/nodeCompileCache.ts b/src/vs/base/node/nodeCompileCache.ts
-index b9cea60d..8b06afd4 100644
+index 081bb2d628..ebb85bf15a 100644
 --- a/src/vs/base/node/nodeCompileCache.ts
 +++ b/src/vs/base/node/nodeCompileCache.ts
-@@ -179,7 +179,8 @@ export function markNodeCompileCacheReady(log?: (message: string) => void): void
+@@ -168,7 +168,8 @@ export function markNodeCompileCacheReady(log?: (message: string) => void): void
  
  export async function waitForNodeCompileCacheReady(): Promise<void> {
  	const { Promises } = await import('./pfs.js');
@@ -138,10 +138,10 @@ index b9cea60d..8b06afd4 100644
  		for (const kind of pendingKinds) {
  			if (await Promises.exists(getNodeCompileCacheReadyMarkerPath(kind))) {
 diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
-index 7b261981..351b392f 100644
+index 9d26615159..12ed3280e9 100644
 --- a/src/vs/code/electron-main/app.ts
 +++ b/src/vs/code/electron-main/app.ts
-@@ -810,7 +810,7 @@ export class CodeApplication extends Disposable {
+@@ -818,7 +818,7 @@ export class CodeApplication extends Disposable {
  				...windows.map(window => window.ready()),
  				sharedProcessReady,
  				appInstantiationService.invokeFunction(accessor => accessor.get(ILocalPtyService).getLatency()),
@@ -151,7 +151,7 @@ index 7b261981..351b392f 100644
  		}
  
 diff --git a/src/vs/code/electron-main/main.ts b/src/vs/code/electron-main/main.ts
-index 93527ec8..a1ded99d 100644
+index 93527ec8a9..a1ded99d46 100644
 --- a/src/vs/code/electron-main/main.ts
 +++ b/src/vs/code/electron-main/main.ts
 @@ -4,6 +4,7 @@
@@ -164,7 +164,7 @@ index 93527ec8..a1ded99d 100644
  import { unlinkSync, promises } from 'fs';
 diff --git a/src/vs/mark42/common/mark42Defaults.ts b/src/vs/mark42/common/mark42Defaults.ts
 new file mode 100644
-index 00000000..42d4ef84
+index 0000000000..42d4ef841d
 --- /dev/null
 +++ b/src/vs/mark42/common/mark42Defaults.ts
 @@ -0,0 +1,41 @@
@@ -210,7 +210,7 @@ index 00000000..42d4ef84
 +
 +Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerDefaultConfigurations([{ overrides: { ...MARK42_DEFAULTS }, source: 'Mark42' }]);
 diff --git a/src/vs/platform/agentHost/browser/agentHostEnablementService.ts b/src/vs/platform/agentHost/browser/agentHostEnablementService.ts
-index 7f52f4a3..85c7cc28 100644
+index 7f52f4a3c9..85c7cc285e 100644
 --- a/src/vs/platform/agentHost/browser/agentHostEnablementService.ts
 +++ b/src/vs/platform/agentHost/browser/agentHostEnablementService.ts
 @@ -48,7 +48,8 @@ class BrowserAgentHostEnablementService extends AgentHostEnablementService {
@@ -224,10 +224,10 @@ index 7f52f4a3..85c7cc28 100644
  }
  
 diff --git a/src/vs/platform/agentHost/node/agentHostService.ts b/src/vs/platform/agentHost/node/agentHostService.ts
-index 92a076a9..d8d0faa2 100644
+index ea081a9538..0c06dd14fa 100644
 --- a/src/vs/platform/agentHost/node/agentHostService.ts
 +++ b/src/vs/platform/agentHost/node/agentHostService.ts
-@@ -23,6 +23,9 @@ const WINDOWS_EXPECTED_SHUTDOWN_EXIT_CODES = new Set([
+@@ -24,6 +24,9 @@ const WINDOWS_EXPECTED_SHUTDOWN_EXIT_CODES = new Set([
  	0x40010004, // DBG_TERMINATE_PROCESS
  ]);
  
@@ -237,7 +237,7 @@ index 92a076a9..d8d0faa2 100644
  function isExpectedWindowsShutdownExit(platform: NodeJS.Platform, code: number): boolean {
  	return platform === 'win32' && WINDOWS_EXPECTED_SHUTDOWN_EXIT_CODES.has(code >>> 0);
  }
-@@ -78,6 +81,10 @@ export class AgentHostProcessManager extends Disposable {
+@@ -79,6 +82,10 @@ export class AgentHostProcessManager extends Disposable {
  		if (this._wasQuitRequested || this._store.isDisposed) {
  			return Promise.reject(new Error('Agent Host process manager is shutting down.'));
  		}
@@ -249,7 +249,7 @@ index 92a076a9..d8d0faa2 100644
  			return Promise.reject(new AgentHostStartError(`Agent Host process stopped after ${Constants.MaxRestarts} restarts.`, true));
  		}
 diff --git a/src/vs/platform/extensionManagement/node/extensionManagementService.ts b/src/vs/platform/extensionManagement/node/extensionManagementService.ts
-index 6eefd716..1ab15d5d 100644
+index 6eefd7163d..1ab15d5da6 100644
 --- a/src/vs/platform/extensionManagement/node/extensionManagementService.ts
 +++ b/src/vs/platform/extensionManagement/node/extensionManagementService.ts
 @@ -340,7 +340,8 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
@@ -263,11 +263,11 @@ index 6eefd716..1ab15d5d 100644
  		const { location, verificationStatus } = await this.extensionsDownloader.download(extension, operation, verifySignature, clientTargetPlatform);
  		const shouldRequireSignature = shouldRequireRepositorySignatureFor(extension.private, await this.extensionGalleryManifestService.getExtensionGalleryManifest());
 diff --git a/src/vs/platform/native/common/native.ts b/src/vs/platform/native/common/native.ts
-index 05f48ad4..435d6d03 100644
+index f6359c9ed0..3b8d6ac8ef 100644
 --- a/src/vs/platform/native/common/native.ts
 +++ b/src/vs/platform/native/common/native.ts
-@@ -352,6 +352,11 @@ export interface ICommonNativeHostService {
- 	showItemInFolder(path: string): Promise<void>;
+@@ -370,6 +370,11 @@ export interface ICommonNativeHostService {
+ 	startFileDrag(path: string, options?: INativeHostOptions): Promise<void>;
  	setRepresentedFilename(path: string, options?: INativeHostOptions): Promise<void>;
  	setDocumentEdited(edited: boolean, options?: INativeHostOptions): Promise<void>;
 +	/**
@@ -279,19 +279,10 @@ index 05f48ad4..435d6d03 100644
  	 * Renders a count badge on the application icon. Passing `undefined` or a
  	 * badge with a count of `0` clears it again.
 diff --git a/src/vs/platform/native/electron-main/nativeHostMainService.ts b/src/vs/platform/native/electron-main/nativeHostMainService.ts
-index 657345f1..82f24aa5 100644
+index 79ad57ce0a..203df44866 100644
 --- a/src/vs/platform/native/electron-main/nativeHostMainService.ts
 +++ b/src/vs/platform/native/electron-main/nativeHostMainService.ts
-@@ -5,7 +5,7 @@
- 
- import * as fs from 'fs';
- import { exec } from 'child_process';
--import { app, BrowserWindow, clipboard, contentTracing, Display, Menu, MessageBoxOptions, MessageBoxReturnValue, Notification, OpenDevToolsOptions, OpenDialogOptions, OpenDialogReturnValue, powerMonitor, powerSaveBlocker, SaveDialogOptions, SaveDialogReturnValue, screen, shell, systemPreferences, webContents } from 'electron';
-+import { app, BrowserWindow, clipboard, contentTracing, Display, Menu, MessageBoxOptions, MessageBoxReturnValue, nativeImage, Notification, OpenDevToolsOptions, OpenDialogOptions, OpenDialogReturnValue, powerMonitor, powerSaveBlocker, SaveDialogOptions, SaveDialogReturnValue, screen, shell, systemPreferences, webContents } from 'electron';
- import { arch, cpus, freemem, loadavg, platform, release, totalmem, type } from 'os';
- import { promisify } from 'util';
- import { memoize } from '../../../base/common/decorators.js';
-@@ -713,6 +713,29 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
+@@ -728,6 +728,29 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
  		window?.setDocumentEdited(edited);
  	}
  
@@ -322,11 +313,11 @@ index 657345f1..82f24aa5 100644
  		const window = this.windowById(options?.targetWindowId, windowId);
  		window?.setApplicationBadge(badge);
 diff --git a/src/vs/platform/windows/electron-main/windowsMainService.ts b/src/vs/platform/windows/electron-main/windowsMainService.ts
-index 52a7cb59..c2eedaf3 100644
+index 44dcb40eb9..297d9b4bbe 100644
 --- a/src/vs/platform/windows/electron-main/windowsMainService.ts
 +++ b/src/vs/platform/windows/electron-main/windowsMainService.ts
 @@ -296,6 +296,16 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
- 	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI, reveal?: URI | 'new', source?: AgentsWindowOpenSource, folderUriIsDefault = false, draft?: IAgentsWindowDraft, onboardingSessionResource?: URI): Promise<ICodeWindow[]> {
+ 	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI, reveal?: URI | 'new', source?: AgentsWindowOpenSource, folderUriIsDefault = false, draft?: IAgentsWindowDraft, onboardingSessionResource?: URI, revealRemoteAuthority?: string): Promise<ICodeWindow[]> {
  		this.logService.trace('windowsManager#openAgentsWindow');
  
 +		// Mark42 (D21): the Agents window is off — the Mk42 hub replaces it
@@ -344,7 +335,7 @@ index 52a7cb59..c2eedaf3 100644
  
 diff --git a/src/vs/workbench/contrib/mark42/browser/mark42Extensions.contribution.ts b/src/vs/workbench/contrib/mark42/browser/mark42Extensions.contribution.ts
 new file mode 100644
-index 00000000..d8234f44
+index 0000000000..d8234f441e
 --- /dev/null
 +++ b/src/vs/workbench/contrib/mark42/browser/mark42Extensions.contribution.ts
 @@ -0,0 +1,21 @@
@@ -371,24 +362,25 @@ index 00000000..d8234f44
 +});
 diff --git a/src/vs/workbench/contrib/mark42/browser/mark42Views.contribution.ts b/src/vs/workbench/contrib/mark42/browser/mark42Views.contribution.ts
 new file mode 100644
-index 00000000..cc01ff5b
+index 0000000000..dc93af358f
 --- /dev/null
 +++ b/src/vs/workbench/contrib/mark42/browser/mark42Views.contribution.ts
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,373 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Mark42 (Mk42) — lightweight build of Code - OSS for AI coding agents.
 + *  Helpers for the Mark42 extension's views that the extension API cannot do for a view it
 + *  contributes into another extension's container (the Claude Code / Codex side bar):
-+ *  - the «작업» (background tasks) view goes above the agent view once per profile (a later
-+ *    rearrangement by the user is kept). The agent extension is installed after the first window
++ *  - the «작업» (background tasks) view — and in Claude windows the «실행» (running commands) view
++ *    right below it — go above the agent view once per profile (a later rearrangement by the user
++ *    is kept). The agent extension is installed after the first window
 + *    opens, so until then the view sits in Explorer (fallback of an unknown container): it is moved
 + *    into the agent container as soon as that appears, and «done» is stored only once it is first
 + *    there next to an agent view;
 + *  - `mark42.views.resetAgentLayout`: «작업·에이전트 영역 기본 배치로 되돌리기» — tasks view and
 + *    the agent views back into the agent container, the container back to the secondary side bar,
 + *    tasks first, both shown and expanded, side bar maximized;
-+ *  - `mark42.views.fitHeight(viewId, contentPx)`: size the view to its content, at most half of
-+ *    the container;
++ *  - `mark42.views.fitHeight(viewId, contentPx)`: size the Mark42 views of a container to their
++ *    content, together at most half of the container (the upper view first);
 + *  - `mark42.views.setTitleLabel(viewId, text, tooltip, command)`: a text item at the left of the
 + *    view's title actions (the agent extension's version next to the Mark42 buttons).
 + *  Only views and commands with the `mark42.` prefix are touched.
@@ -411,38 +403,70 @@ index 00000000..cc01ff5b
 +import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
 +import { IViewsService } from '../../../services/views/common/viewsService.js';
 +
-+/** Mark42 확장 package.json의 «작업» 보기와 그 보기가 들어갈 에이전트 컨테이너(뷰 컨테이너 id = `workbench.view.extension.<키>`) */
-+const AGENT_LAYOUTS: readonly { kind: string; tasksView: string; container: string; agentViews: readonly string[] }[] = [
-+	{ kind: 'claude', tasksView: 'mark42.tasks.claude', container: 'workbench.view.extension.claude-sidebar-secondary', agentViews: ['claudeVSCodeSidebarSecondary'] },
-+	{ kind: 'codex', tasksView: 'mark42.tasks.codex', container: 'workbench.view.extension.codexSecondaryViewContainer', agentViews: ['chatgpt.sidebarSecondaryView'] },
++/**
++ * Mark42 확장 package.json의 Mark42 보기(위에서부터 이 순서 — «작업», Claude는 그 아래 «실행»)와 그 보기들이 들어갈
++ * 에이전트 컨테이너(뷰 컨테이너 id = `workbench.view.extension.<키>`)
++ */
++const AGENT_LAYOUTS: readonly { kind: string; views: readonly string[]; container: string; agentViews: readonly string[] }[] = [
++	{ kind: 'claude', views: ['mark42.tasks.claude', 'mark42.runs.claude'], container: 'workbench.view.extension.claude-sidebar-secondary', agentViews: ['claudeVSCodeSidebarSecondary'] },
++	{ kind: 'codex', views: ['mark42.tasks.codex'], container: 'workbench.view.extension.codexSecondaryViewContainer', agentViews: ['chatgpt.sidebarSecondaryView'] },
 +];
 +
-+/** 프로필마다 한 번 «작업» 보기를 맨 위로 — v1 키는 탐색기(대체 컨테이너)에서 세워진 경우가 있어 다시 한 번 해요 */
++/** 프로필마다 한 번 Mark42 보기를 제자리로(«작업» 맨 위, «실행» 그 아래) — v1 키는 탐색기(대체 컨테이너)에서 세워진 경우가 있어 다시 한 번 해요 */
 +const onTopKey = (viewId: string) => `mark42.tasksViewOnTop.v2.${viewId}`;
 +const legacyOnTopKey = (viewId: string) => `mark42.tasksViewOnTop.${viewId}`;
 +
 +const AGENT_WINDOW = ContextKeyExpr.has('mark42.agentWindow');
 +const isKorean = language.toLowerCase().startsWith('ko');
 +
-+/** 마지막으로 받은 «작업» 보기 내용 높이(mark42.views.fitHeight) — 배치 되돌리기 뒤에 다시 맞출 때 써요 */
++/** 마지막으로 받은 Mark42 보기 내용 높이(mark42.views.fitHeight) — 다른 Mark42 보기를 맞출 때·배치 되돌리기 뒤에 써요 */
 +const lastContentPx = new Map<string, number>();
 +
-+/** 내용 높이에 맞는 보기 크기: 최소 크기 이상, 최대 컨테이너의 반 */
-+function fitSize(paneContainer: ViewPaneContainer, pane: ViewPane, contentPx: number): number {
-+	const total = paneContainer.panes.reduce((sum, p) => sum + paneContainer.getPaneSize(p), 0);
-+	return Math.round(Math.min(total / 2, Math.max(pane.minimumBodySize + DEFAULT_PANE_HEADER_SIZE, contentPx + DEFAULT_PANE_HEADER_SIZE)));
++/**
++ * 컨테이너의 펼친 Mark42 보기(내용 높이를 받은 것)를 함께 맞춰요: 합쳐서 컨테이너의 반까지, 위에 있는 보기부터 내용 높이만큼
++ * (아래 보기의 최소 크기는 남겨 둬요). 각 보기는 최소 크기 이상. 다른(에이전트) 보기가 없으면 손대지 않아요.
++ */
++function fitMark42Panes(paneContainer: ViewPaneContainer): void {
++	const panes = paneContainer.panes;
++	const ours = panes.filter(p => p.id.startsWith('mark42.') && p.isExpanded() && lastContentPx.has(p.id));
++	if (ours.length === 0 || panes.length < 2 || panes.every(p => p.id.startsWith('mark42.'))) {
++		return;
++	}
++	const total = panes.reduce((sum, p) => sum + paneContainer.getPaneSize(p), 0);
++	const minOf = (p: ViewPane) => p.minimumBodySize + DEFAULT_PANE_HEADER_SIZE;
++	let budget = total / 2;
++	ours.forEach((pane, i) => {
++		const restMin = ours.slice(i + 1).reduce((sum, p) => sum + minOf(p), 0);
++		const want = Math.round(Math.max(minOf(pane), Math.min(budget - restMin, lastContentPx.get(pane.id)! + DEFAULT_PANE_HEADER_SIZE)));
++		budget -= want;
++		if (Math.abs(paneContainer.getPaneSize(pane) - want) >= 2) {
++			paneContainer.resizePane(pane, want);
++		}
++	});
 +}
 +
 +/**
-+ * 보기를 컨테이너 모델 맨 앞으로. `IViewContainerModel.move`는 이미 그려진 창(pane)을 옮기지 않아서, 창이 있으면
-+ * `ViewPaneContainer.movePane`으로 옮겨요. 창은 있는데 그 컨테이너가 지금 열려 있지 않으면 false(나중에 다시).
++ * 보기를 컨테이너 모델에서 anchor 바로 뒤로(anchor가 없거나 이 컨테이너에 없으면 맨 앞으로). `IViewContainerModel.move`는
++ * 이미 그려진 창(pane)을 옮기지 않아서, 창이 있으면 `ViewPaneContainer.movePane`으로 옮겨요. 둘 다 «빼낸 뒤 대상 자리에 넣기»라
++ * 앞에서 오면 대상 뒤에, 뒤에서 오면 대상 앞에 놓여요. 창은 있는데 그 컨테이너가 지금 열려 있지 않으면 false(나중에 다시).
 + */
-+function moveViewFirst(viewDescriptorService: IViewDescriptorService, viewsService: IViewsService, container: ViewContainer, viewId: string): boolean {
++function moveViewAfter(viewDescriptorService: IViewDescriptorService, viewsService: IViewsService, container: ViewContainer, viewId: string, anchorId: string | undefined): boolean {
 +	const model = viewDescriptorService.getViewContainerModel(container);
-+	if (!model.allViewDescriptors.some(v => v.id === viewId)) {
++	const ids = () => model.allViewDescriptors.map(v => v.id);
++	if (!ids().includes(viewId)) {
 +		return false;
 +	}
-+	if (model.allViewDescriptors[0].id === viewId) {
++	let anchor = anchorId !== undefined && anchorId !== viewId && ids().includes(anchorId) ? anchorId : undefined;
++	// 이 보기는 창(pane)이 있는데 기준 보기는 창이 없으면(숨김) 창 순서로는 «바로 뒤»를 맞출 수 없어요 — 모델만 옮기면 창 순서와
++	// 어긋나니, 기준이 없는 것으로 보고 맨 앞에 놓아요
++	if (anchor !== undefined && viewsService.getViewWithId(viewId) && !viewsService.getViewWithId(anchor)) {
++		anchor = undefined;
++	}
++	const placed = () => {
++		const a = ids();
++		return anchor === undefined ? a[0] === viewId : a.indexOf(viewId) === a.indexOf(anchor) + 1;
++	};
++	if (placed()) {
 +		return true;
 +	}
 +	if (viewsService.getViewWithId(viewId)) {
@@ -451,17 +475,35 @@ index 00000000..cc01ff5b
 +			return false;
 +		}
 +		const pane = paneContainer.getView(viewId);
-+		const firstPane = paneContainer.panes[0];
-+		if (pane && firstPane && pane !== firstPane) {
-+			paneContainer.movePane(pane, firstPane);
++		const panes = paneContainer.panes;
++		if (pane instanceof ViewPane) {
++			const from = panes.indexOf(pane);
++			let target: ViewPane | undefined;
++			if (anchor === undefined) {
++				target = panes[0];
++			} else {
++				const anchorPane = paneContainer.getView(anchor);
++				const at = anchorPane instanceof ViewPane ? panes.indexOf(anchorPane) : -1;
++				if (at >= 0) {
++					target = from < at ? panes[at] : panes[at + 1];
++				}
++			}
++			if (target && target !== pane) {
++				paneContainer.movePane(pane, target);
++			}
 +		}
 +	}
-+	// 보이는 창들 사이 순서는 그대로 두고(앞에 남은 것은 안 보이는 보기뿐), 모델에서도 맨 앞으로
-+	const first = model.allViewDescriptors[0];
-+	if (first.id !== viewId) {
-+		model.move(viewId, first.id);
++	// 보이는 창들 사이 순서는 위에서 맞췄어요 — 모델(안 보이는 보기 포함)에서도 같은 자리로
++	if (!placed()) {
++		const a = ids();
++		const from = a.indexOf(viewId);
++		const at = anchor === undefined ? -1 : a.indexOf(anchor);
++		const to = anchor === undefined ? 0 : (from < at ? at : at + 1);
++		if (a[to] !== undefined && a[to] !== viewId) {
++			model.move(viewId, a[to]);
++		}
 +	}
-+	return model.allViewDescriptors[0]?.id === viewId;
++	return placed();
 +}
 +
 +class Mark42ViewsContribution extends Disposable implements IWorkbenchContribution {
@@ -485,8 +527,8 @@ index 00000000..cc01ff5b
 +	}
 +
 +	/**
-+	 * 프로필마다 한 번, 보기마다: 에이전트 컨테이너 맨 위에. 그 뒤로는 사용자가 놓은 자리를 그대로 둬요.
-+	 * «끝»은 보기가 에이전트 컨테이너에서 에이전트 보기와 함께 있고 맨 앞이 된 뒤에만 저장해요.
++	 * 프로필마다 한 번, 보기마다: 에이전트 컨테이너 맨 위에(«실행»은 «작업» 바로 아래). 그 뒤로는 사용자가 놓은 자리를 그대로 둬요.
++	 * «끝»은 보기가 에이전트 컨테이너에서 에이전트 보기와 함께 있고 제자리가 된 뒤에만 저장해요.
 +	 */
 +	private placeTasksViews(): void {
 +		if (this.placing) {
@@ -495,15 +537,14 @@ index 00000000..cc01ff5b
 +		this.placing = true;
 +		try {
 +			for (const layout of AGENT_LAYOUTS) {
-+				this.placeTasksView(layout);
++				layout.views.forEach((id, i) => this.placeTasksView(layout, id, i > 0 ? layout.views[i - 1] : undefined));
 +			}
 +		} finally {
 +			this.placing = false;
 +		}
 +	}
 +
-+	private placeTasksView(layout: typeof AGENT_LAYOUTS[number]): void {
-+		const id = layout.tasksView;
++	private placeTasksView(layout: typeof AGENT_LAYOUTS[number], id: string, anchor: string | undefined): void {
 +		const key = onTopKey(id);
 +		if (this.storageService.getBoolean(key, StorageScope.PROFILE, false)) {
 +			return;
@@ -534,7 +575,7 @@ index 00000000..cc01ff5b
 +		if (!model.allViewDescriptors.some(v => !v.id.startsWith('mark42.'))) {
 +			return; // 에이전트 보기가 아직 등록되지 않았어요 — 지금 맨 앞이어도 나중에 들어올 보기가 순서를 정해요
 +		}
-+		if (moveViewFirst(this.viewDescriptorService, this.viewsService, expected, id)) {
++		if (moveViewAfter(this.viewDescriptorService, this.viewsService, expected, id, anchor)) {
 +			this.markDone(id);
 +		}
 +	}
@@ -561,10 +602,7 @@ index 00000000..cc01ff5b
 +	if (!(pane instanceof ViewPane) || !pane.isExpanded() || paneContainer.panes.length < 2) {
 +		return false;
 +	}
-+	const want = fitSize(paneContainer, pane, contentPx);
-+	if (Math.abs(paneContainer.getPaneSize(pane) - want) >= 2) {
-+		paneContainer.resizePane(pane, want);
-+	}
++	fitMark42Panes(paneContainer);
 +	return true;
 +});
 +
@@ -593,7 +631,7 @@ index 00000000..cc01ff5b
 +				id: MenuId.ViewTitle,
 +				group: 'z_mark42',
 +				order: 1,
-+				when: ContextKeyExpr.and(ContextKeyExpr.regex('view', /^mark42\.tasks\./), AGENT_WINDOW),
++				when: ContextKeyExpr.and(ContextKeyExpr.regex('view', /^mark42\.(tasks|runs)\./), AGENT_WINDOW),
 +			}],
 +		});
 +	}
@@ -616,8 +654,8 @@ index 00000000..cc01ff5b
 +			if (defaultLocation !== null && viewDescriptorService.getViewContainerLocation(container) !== defaultLocation) {
 +				viewDescriptorService.moveViewContainerToLocation(container, defaultLocation, undefined, RESET_AGENT_LAYOUT_ID);
 +			}
-+			// 이 컨테이너가 기본 자리인 보기(에이전트 확장 것) + «작업» 보기(에이전트 확장보다 먼저 등록되면 기본 자리가 탐색기라 따로)
-+			const ids = new Set([...viewsRegistry.getViews(container).map(v => v.id), layout.tasksView]);
++			// 이 컨테이너가 기본 자리인 보기(에이전트 확장 것) + Mark42 보기(에이전트 확장보다 먼저 등록되면 기본 자리가 탐색기라 따로)
++			const ids = new Set([...viewsRegistry.getViews(container).map(v => v.id), ...layout.views]);
 +			for (const id of ids) {
 +				const descriptor = viewDescriptorService.getViewDescriptorById(id);
 +				const current = viewDescriptorService.getViewContainerByViewId(id);
@@ -632,10 +670,10 @@ index 00000000..cc01ff5b
 +			return;
 +		}
 +
-+		// 보일 보기: «작업» + 에이전트 보기(알려진 id, 그 밖에 기본으로 보이는 에이전트 확장 보기)
++		// 보일 보기: Mark42 보기 + 에이전트 보기(알려진 id, 그 밖에 기본으로 보이는 에이전트 확장 보기)
 +		const model = viewDescriptorService.getViewContainerModel(container);
 +		const inModel = (id: string) => model.allViewDescriptors.some(v => v.id === id);
-+		const shown = [layout.tasksView, ...model.allViewDescriptors
++		const shown = [...layout.views, ...model.allViewDescriptors
 +			.filter(v => !v.id.startsWith('mark42.') && viewsRegistry.getViewContainer(v.id) === container && (layout.agentViews.includes(v.id) || !v.hideByDefault))
 +			.map(v => v.id)].filter(inModel);
 +		for (const id of shown) {
@@ -655,21 +693,25 @@ index 00000000..cc01ff5b
 +				paneContainer.getView(id)?.setExpanded(true);
 +			}
 +		}
-+		if (moveViewFirst(viewDescriptorService, viewsService, container, layout.tasksView)) {
-+			storageService.store(onTopKey(layout.tasksView), true, StorageScope.PROFILE, StorageTarget.MACHINE);
-+		}
++		layout.views.forEach((id, i) => {
++			if (moveViewAfter(viewDescriptorService, viewsService, container, id, i > 0 ? layout.views[i - 1] : undefined)) {
++				storageService.store(onTopKey(id), true, StorageScope.PROFILE, StorageTarget.MACHINE);
++			}
++		});
 +
-+		// 최대화·창 추가 뒤 레이아웃이 자리 잡으면 «작업» 높이: 마지막 내용 높이에 맞게, 모르면 컨테이너의 1/4(최소 크기 이상)
++		// 최대화·창 추가 뒤 레이아웃이 자리 잡으면 Mark42 보기 높이: 마지막 내용 높이에 맞게, 하나도 모르면 «작업»을 컨테이너의 1/4(최소 크기 이상)
 +		await timeout(50);
 +		const panes = viewsService.getActiveViewPaneContainerWithId(container.id);
-+		const tasksPane = panes instanceof ViewPaneContainer ? panes.getView(layout.tasksView) : undefined;
-+		if (panes instanceof ViewPaneContainer && tasksPane instanceof ViewPane && tasksPane.isExpanded() && panes.panes.length >= 2) {
-+			const contentPx = lastContentPx.get(layout.tasksView);
-+			const total = panes.panes.reduce((sum, p) => sum + panes.getPaneSize(p), 0);
-+			const want = contentPx !== undefined
-+				? fitSize(panes, tasksPane, contentPx)
-+				: Math.round(Math.max(tasksPane.minimumBodySize + DEFAULT_PANE_HEADER_SIZE, total / 4));
-+			panes.resizePane(tasksPane, want);
++		if (panes instanceof ViewPaneContainer && panes.panes.length >= 2) {
++			if (layout.views.some(id => lastContentPx.has(id))) {
++				fitMark42Panes(panes);
++			} else {
++				const tasksPane = panes.getView(layout.views[0]);
++				if (tasksPane instanceof ViewPane && tasksPane.isExpanded()) {
++					const total = panes.panes.reduce((sum, p) => sum + panes.getPaneSize(p), 0);
++					panes.resizePane(tasksPane, Math.round(Math.max(tasksPane.minimumBodySize + DEFAULT_PANE_HEADER_SIZE, total / 4)));
++				}
++			}
 +		}
 +	}
 +});
@@ -699,7 +741,7 @@ index 00000000..cc01ff5b
 +});
 diff --git a/src/vs/workbench/contrib/mark42/electron-browser/mark42AgentIcon.contribution.ts b/src/vs/workbench/contrib/mark42/electron-browser/mark42AgentIcon.contribution.ts
 new file mode 100644
-index 00000000..0bef530d
+index 0000000000..0bef530d45
 --- /dev/null
 +++ b/src/vs/workbench/contrib/mark42/electron-browser/mark42AgentIcon.contribution.ts
 @@ -0,0 +1,114 @@
@@ -818,15 +860,15 @@ index 00000000..0bef530d
 +
 +registerWorkbenchContribution2(Mark42AgentIconContribution.ID, Mark42AgentIconContribution, WorkbenchPhase.Eventually);
 diff --git a/src/vs/workbench/contrib/webview/browser/pre/index.html b/src/vs/workbench/contrib/webview/browser/pre/index.html
-index e7deb139..d9a98f6c 100644
+index 0b840cb731..e7a3b3ce1b 100644
 --- a/src/vs/workbench/contrib/webview/browser/pre/index.html
 +++ b/src/vs/workbench/contrib/webview/browser/pre/index.html
 @@ -5,7 +5,7 @@
  	<meta charset="UTF-8">
  
  	<meta http-equiv="Content-Security-Policy"
--		content="default-src 'none'; script-src 'sha256-7cKy9iQfWRXcgRS74x6I4q5cRDkv8nQz51jecqMmQ5w=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
-+		content="default-src 'none'; script-src 'sha256-pOhpW+IAdqRFRk9CLP4889WJlIzIZNvg/s8Txl0chjQ=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+-		content="default-src 'none'; script-src 'sha256-29YeDbmHnhN2BgMJKVq7vDCMiuya6rpEctI6SkJFfJc=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
++		content="default-src 'none'; script-src 'sha256-Z0KO8QZ5qBiHJ/6zMMP7J9iYBPeOHq1f/lb87tR2tLs=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
  
  	<!-- Disable pinch zooming -->
  	<meta name="viewport"
@@ -839,7 +881,7 @@ index e7deb139..d9a98f6c 100644
  		const expectedWorkerVersion = parseInt(searchParams.get('swVersion'));
  
  		/**
-@@ -789,6 +791,251 @@
+@@ -829,6 +831,251 @@
  			});
  		};
  
@@ -1091,7 +1133,7 @@ index e7deb139..d9a98f6c 100644
  		function handleInnerDragStartEvent(/** @type {DragEvent} */ e) {
  			if (e.defaultPrevented) {
  				// Extension code has already handled this event
-@@ -1133,6 +1380,9 @@
+@@ -1174,6 +1421,9 @@
  
  						contentWindow.addEventListener('scroll', handleInnerScroll);
  						contentWindow.addEventListener('wheel', handleWheel);
@@ -1102,10 +1144,10 @@ index e7deb139..d9a98f6c 100644
  							const focused = /** @type {HTMLElement | null} */ (contentDocument.activeElement);
  							if (focused && focused !== contentDocument.body && focused !== contentDocument.documentElement) {
 diff --git a/src/vs/workbench/test/electron-browser/workbenchTestServices.ts b/src/vs/workbench/test/electron-browser/workbenchTestServices.ts
-index a3c9626f..91f561a0 100644
+index 911e9cb26d..a6fcd8148c 100644
 --- a/src/vs/workbench/test/electron-browser/workbenchTestServices.ts
 +++ b/src/vs/workbench/test/electron-browser/workbenchTestServices.ts
-@@ -156,6 +156,7 @@ export class TestNativeHostService implements INativeHostService {
+@@ -159,6 +159,7 @@ export class TestNativeHostService implements INativeHostService {
  	async killProcess(): Promise<void> { }
  	async setDocumentEdited(edited: boolean): Promise<void> { }
  	async setApplicationBadge(badge: IApplicationBadge | undefined): Promise<void> { }
@@ -1114,7 +1156,7 @@ index a3c9626f..91f561a0 100644
  	async updateTouchBar(): Promise<void> { }
  	async moveItemToTrash(): Promise<void> { }
 diff --git a/src/vs/workbench/workbench.desktop.main.ts b/src/vs/workbench/workbench.desktop.main.ts
-index 5278709d..6a94cf60 100644
+index 63b4207407..73ed14a26c 100644
 --- a/src/vs/workbench/workbench.desktop.main.ts
 +++ b/src/vs/workbench/workbench.desktop.main.ts
 @@ -12,6 +12,7 @@
@@ -1125,7 +1167,7 @@ index 5278709d..6a94cf60 100644
  import './workbench.common.main.js';
  
  //#endregion
-@@ -221,6 +222,11 @@ import './contrib/keybindingsExport/electron-browser/keybindingsExport.contribut
+@@ -220,6 +221,11 @@ import './contrib/keybindingsExport/electron-browser/keybindingsExport.contribut
  // System-wide (OS global) Keybindings
  import './contrib/keybindings/electron-browser/systemWideKeybindings.contribution.js';
  

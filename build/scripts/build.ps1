@@ -1,6 +1,6 @@
 # Mark42 패치 빌드(PM/005 §4): 업스트림 작업 폴더에 Mark42를 적용하고 Windows x64 앱 폴더를 만들어요.
 #   powershell -File build\scripts\build.ps1 [-SkipInstall]
-# 결과: <workdir 부모>\VSCode-win32-x64 (Mk42.exe). 설치기·서명·CLI는 만들지 않아요.
+# 결과: <workdir 부모>\VSCode-win32-x64 (Mk42.exe). 설치기·서명·CLI는 만들지 않아요. 패키지 설치는 업스트림이 pnpm이면 corepack pnpm, 아니면 npm ci.
 # 스펙터 완화 라이브러리가 있는 Build Tools 개발자 셸에서 돌려요(Community 설치에는 없어서 node-gyp가 MSB8040으로 실패 — 2026-10-27).
 param([switch]$SkipInstall)
 $ErrorActionPreference = 'Stop'
@@ -29,14 +29,17 @@ $env:FOUNDRY_LOCAL_SKIP_INSTALL = '1'
 $env:npm_config_arch = 'x64'
 Push-Location $work
 try {
+    # 업스트림 1.146부터 pnpm(package.json packageManager, pnpm-lock.yaml) — corepack이 그 판을 받아 써요. 그 전 판은 npm(package-lock.json)
+    $usePnpm = Test-Path (Join-Path $work 'pnpm-lock.yaml')
+    if ($usePnpm) { $env:COREPACK_ENABLE_DOWNLOAD_PROMPT = '0' }
     if (-not $SkipInstall) {
-        npm ci
-        if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+        if ($usePnpm) { corepack pnpm install --frozen-lockfile --config.confirmModulesPurge=false } else { npm ci }
+        if ($LASTEXITCODE -ne 0) { throw 'package install failed' }
     }
     # 메모리를 넉넉히(번들 단계)
     $env:NODE_OPTIONS = '--max-old-space-size=16384'
     $started = Get-Date
-    npm run gulp vscode-win32-x64-min
+    if ($usePnpm) { corepack pnpm run gulp vscode-win32-x64-min } else { npm run gulp vscode-win32-x64-min }
     if ($LASTEXITCODE -ne 0) {
         # 마지막 단계(컴파일 캐시)만 가끔 경합으로 실패해요 — 묶기가 이번에 끝났으면(main.js가 새것) 그 단계만 다시
         $mainJs = Join-Path (Split-Path -Parent $work) 'VSCode-win32-x64\resources\app\out\main.js'

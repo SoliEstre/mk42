@@ -172,6 +172,12 @@
           "name": "%view.tasks%",
           "visibility": "collapsed",
           "when": "mark42.agentWindow && mark42.agentKind == claude"
+        },
+        {
+          "id": "mark42.runs.claude",
+          "type": "webview",
+          "name": "%view.runs%",
+          "when": "mark42.agentWindow && mark42.agentKind == claude"
         }
       ],
       "codexSecondaryViewContainer": [

@@ -746,11 +746,23 @@ describe('task monitor', () => {
       const m = createTaskMonitor({ claudeDir: fx.claudeDir, codexHome: join(t.dir, 'no-codex'), pollMs: 30 });
       let changes = 0;
       m.start(() => changes++);
-      // 기준값이 잡힐 때까지
+      // 기준값은 첫 목록을 모은 뒤에 잡혀요(부하가 크면 늦어요) — 덧붙임이 기준값에 묻히지 않게 바뀜이 잡힐 때까지 조금씩 덧붙여요
       await new Promise((r) => setTimeout(r, 150));
       const base = changes;
-      appendFileSync(join(fx.sub, 'agent-arun.jsonl'), assistant('m_more', U2, [], 10));
-      await until(() => changes > base, 3000, 'onChange after append');
+      let n = 0;
+      let last = 0;
+      await until(
+        () => {
+          if (changes > base) return true;
+          if (Date.now() - last > 200) {
+            last = Date.now();
+            appendFileSync(join(fx.sub, 'agent-arun.jsonl'), assistant(`m_more${n++}`, U2, [], 10));
+          }
+          return false;
+        },
+        5000,
+        'onChange after append',
+      );
       m.stop();
       const stoppedAt = changes;
       appendFileSync(join(fx.sub, 'agent-arun.jsonl'), assistant('m_more2', U2, [], 10));

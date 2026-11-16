@@ -14,6 +14,7 @@ import type { CollectOptions, TaskCollector } from './claudeTasks.ts';
 import {
   byRunningThenRecent,
   clipLabel,
+  clipText,
   DEFAULT_SINCE_MS,
   iso,
   isRec,
@@ -52,6 +53,8 @@ interface ThreadRow {
   createdMs?: number;
   updatedMs?: number;
   parentId?: string;
+  model?: string;
+  effort?: string;
 }
 
 interface RolloutEntry extends CacheTouch {
@@ -115,6 +118,8 @@ export function readCodexSpawnTree(dbPath: string): { children: ThreadRow[]; par
       'updated_at_ms',
       'updated_at',
       'source',
+      'model',
+      'reasoning_effort',
     ];
     const sel = want.filter((c) => cols.has(c)).map((c) => `"${c}"`).join(', ');
     const edgeParent = new Map<string, string>();
@@ -146,6 +151,10 @@ export function readCodexSpawnTree(dbPath: string): { children: ThreadRow[]; par
       if (c !== undefined) t.createdMs = c;
       const u = msOf(r, 'updated_at_ms', 'updated_at');
       if (u !== undefined) t.updatedMs = u;
+      const model = str(r.model);
+      if (model) t.model = clipText(model, 80);
+      const effort = str(r.reasoning_effort);
+      if (effort) t.effort = clipText(effort, 20);
       const p = parseSource(r.source).parentId ?? edgeParent.get(id);
       if (p) t.parentId = p;
       return t;
@@ -274,6 +283,8 @@ export function createCodexTaskCollector(opts: CodexTaskOptions = {}): TaskColle
       if (status === 'done' || status === 'failed') a.endedAt = a.updatedAt;
       if (c.tokensUsed !== undefined && c.tokensUsed > 0) a.tokens = { ...zeroTokens(), total: c.tokensUsed };
       if (ro?.activity) a.activity = ro.activity;
+      if (c.model) a.model = c.model;
+      if (c.effort) a.effort = c.effort;
       const list = bySession.get(rootId) ?? [];
       list.push(a);
       bySession.set(rootId, list);

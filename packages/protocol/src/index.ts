@@ -4,3 +4,4 @@ export * from './rpc.ts';
 export * from './client.ts';
 export * from './theme.ts';
 export * from './git.ts';
+export * from './model.ts';

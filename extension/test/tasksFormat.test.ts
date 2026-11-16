@@ -102,3 +102,16 @@ test('agents sort running first, then most recently updated, stable otherwise', 
   const list = [a('d1', 'done', '2026-10-30T10:05:00Z'), a('r1', 'running', '2026-10-30T10:01:00Z'), a('d2', 'done', '2026-10-30T10:09:00Z'), a('r2', 'running', '2026-10-30T10:01:00Z')];
   assert.deepEqual(sortAgents(list).map((x) => x.id), ['r1', 'r2', 'd2', 'd1']);
 });
+
+test('model: Claude ids shorten to family + version (dates, [1m] dropped); others stay; effort joins with ·', async () => {
+  const { shortModel, modelText } = await import('../src/lib/tasksFormat.ts');
+  assert.equal(shortModel('claude-opus-5-5'), 'Opus 5.5');
+  assert.equal(shortModel('claude-sonnet-5-5-20261001'), 'Sonnet 5.5');
+  assert.equal(shortModel('claude-fable-5-1[1m]'), 'Fable 5.1');
+  assert.equal(shortModel('claude-haiku-5'), 'Haiku 5');
+  assert.equal(shortModel('gpt-6-luna'), 'gpt-6-luna');
+  assert.equal(shortModel(undefined), '');
+  assert.equal(modelText({ model: 'claude-opus-5-5', effort: 'xhigh' }), 'Opus 5.5 · xhigh');
+  assert.equal(modelText({ effort: 'low' }), 'low');
+  assert.equal(modelText({}), '');
+});

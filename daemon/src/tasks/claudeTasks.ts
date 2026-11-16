@@ -4,13 +4,17 @@
 // 끝난 워크플로우는 <세션>/workflows/<runId>.json(실행 결과)이 생겨요 — 상태·이름·agent 수만 읽고 script·result 본문은 버려요.
 // 스크립트 meta·실행 결과는 세션의 지금 cwd 쪽 프로젝트 폴더에 쓰일 수 있어서, 같은 세션의 다른 프로젝트 폴더도 찾아봐요.
 // 스크립트는 실행하지 않고 앞부분만 정규식으로 읽어요. 활동 줄에는 도구 이름 + 파일 이름만 넣어요(명령·패턴·본문 없음).
+// 터미널 명령(«실행»): 본 세션 transcript의 Bash·PowerShell 호출(claudeRuns.ts) — 처음엔 끝 4MB만, 그 뒤로 덧붙은 줄만 읽어요.
+// 서브에이전트가 없는 세션도 본 세션 transcript가 창 안이면 봐요(명령만 있을 수 있어서). 명령은 세션을 지정한 요청(에이전트 창)에만
+// 실어요 — 전체 목록(통합 창)은 명령을 그리지 않고, 명령만 있는 세션이 빈 카드로 한도를 차지하면 안 돼요.
 import { createHash } from 'node:crypto';
 import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { BackgroundAgent, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks, TokenUsage } from '@mark42/protocol';
+import type { BackgroundAgent, BackgroundRun, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks, TokenUsage } from '@mark42/protocol';
 import { claudeConfigDir, normalizePath } from '@mark42/protocol/paths';
 import { summarizeRecords } from '../indexers/claude.ts';
 import { peekJsonl } from '../indexers/jsonl-peek.ts';
+import { applyRunRecord, newRunsState, runningCount, runsOf, type RunsState } from './claudeRuns.ts';
 import {
   addTokens,
   byRunningThenRecent,
@@ -68,6 +72,9 @@ const SCRIPT_HEAD = 16 * 1024;
 const MAIN_REPEEK_MS = 60 * 1000;
 /** 실행 결과 json은 script·result 본문까지 들어 있어 커요 — 이보다 크면 읽지 않아요 */
 const RUN_JSON_MAX = 16 * 1024 * 1024;
+/** 본 세션 transcript(수백 MB일 수 있어요)를 처음 읽을 때 끝에서 이만큼만 — 그보다 앞서 시작해 아직 도는 명령은 놓쳐요 */
+export const RUNS_TAIL_BYTES = 4 * 1024 * 1024;
+const SESSION_JSONL = /^([0-9A-Za-z-]{8,128})\.jsonl$/;
 
 // ---- 워크플로우 스크립트 meta (실행하지 않고 글자로만)
 
@@ -159,6 +166,9 @@ interface AgentFileState extends FileStamp, CacheTouch {
   /** 마지막 응답의 usage — 표시 total은 Claude Code처럼 이것의 문맥(input + 캐시 읽기·쓰기)이에요 */
   last?: TokenUsage;
   activity?: string;
+  /** 마지막 응답의 모델·추론 강도 */
+  model?: string;
+  effort?: string;
 }
 
 interface AgentMeta {
@@ -197,6 +207,12 @@ interface ScriptEntry extends CacheTouch {
 interface DirListEntry extends CacheTouch {
   mtimeMs: number;
   names: string[];
+}
+
+/** 본 세션 transcript의 터미널 명령(덧붙은 바이트만 읽어요) */
+interface MainRunsEntry extends CacheTouch {
+  cursor: TailCursor;
+  state: RunsState;
 }
 
 interface MainEntry extends CacheTouch {
@@ -275,6 +291,14 @@ function applyAgentRecord(st: AgentFileState, r: unknown): void {
   if (st.cwd === undefined) st.cwd = str(r.cwd);
   if (r.type !== 'assistant' || !isRec(r.message)) return;
   const msg = r.message;
+  const model = str(msg.model);
+  if (model && model !== '<synthetic>') st.model = clipText(model, 80);
+  else if (!st.model) {
+    const requested = str(r.requestedModel);
+    if (requested) st.model = clipText(requested.replace(/\[[^\]]*\]$/, ''), 80);
+  }
+  const effort = str(r.effort);
+  if (effort) st.effort = clipText(effort, 20);
   const u = usageOf(msg.usage);
   if (u) {
     const id = str(msg.id);
@@ -372,6 +396,8 @@ interface PassCtx {
   t: number;
   cutoff: number;
   homes: Map<string, string[]>;
+  /** 세션 하나만(에이전트 창) — 터미널 명령도 실어요 */
+  scoped: boolean;
 }
 
 export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCollector & { readonly cachedFiles: number } {
@@ -384,6 +410,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
   const scripts = new Map<string, ScriptEntry>();
   const dirLists = new Map<string, DirListEntry>();
   const mains = new Map<string, MainEntry>();
+  const mainRuns = new Map<string, MainRunsEntry>();
   const runs = new Map<string, RunEntry>();
   /** `<세션>/<runId>` → 찾아 둔 스크립트·실행 결과 경로 */
   const runRefs = new Map<string, RunRef>();
@@ -409,29 +436,41 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     const infos: SessionDirInfo[] = [];
     for (const projDir of projects) {
       const projPath = join(projectsDir, projDir);
-      let names: string[];
+      const names = new Set<string>();
+      const mainsOnly = new Set<string>();
       try {
-        names = (await readdir(projPath, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
+        for (const d of await readdir(projPath, { withFileTypes: true })) {
+          if (d.isDirectory()) names.add(d.name);
+          else if (d.isFile()) {
+            const m = SESSION_JSONL.exec(d.name);
+            if (m) mainsOnly.add(m[1]!);
+          }
+        }
       } catch {
         continue;
       }
-      for (const sessionId of names) {
+      for (const n of names) mainsOnly.delete(n);
+      for (const sessionId of [...names, ...mainsOnly]) {
         if (only !== undefined && sessionId !== only) continue;
-        const h = homes.get(sessionId);
-        if (h) h.push(projDir);
-        else homes.set(sessionId, [projDir]);
+        const hasDir = names.has(sessionId);
+        if (hasDir) {
+          const h = homes.get(sessionId);
+          if (h) h.push(projDir);
+          else homes.set(sessionId, [projDir]);
+        }
         const sessionDir = join(projPath, sessionId);
-        const sub = await statOrUndef(join(sessionDir, 'subagents'));
-        if (!sub) continue;
-        const wf = await statOrUndef(join(sessionDir, 'subagents', 'workflows'));
+        const sub = hasDir ? await statOrUndef(join(sessionDir, 'subagents')) : undefined;
+        const wf = sub ? await statOrUndef(join(sessionDir, 'subagents', 'workflows')) : undefined;
         // 폴더 mtime은 파일이 새로 생길 때만 바뀌어요 — 오래 도는 일은 본 세션 transcript가 움직이는 걸로도 창 안에 둬요
         const main = await statOrUndef(join(projPath, `${sessionId}.jsonl`));
+        // 서브에이전트도 본 세션 transcript도 없으면 볼 게 없어요(터미널 명령은 transcript에서)
+        if (!sub && !main) continue;
         infos.push({
           projDir,
           sessionId,
           sessionDir,
-          mtimeMs: Math.max(sub.mtimeMs, wf?.mtimeMs ?? 0, main?.mtimeMs ?? 0),
-          stampKey: `${sub.mtimeMs}/${wf?.mtimeMs ?? 0}/${main?.mtimeMs ?? 0}`,
+          mtimeMs: Math.max(sub?.mtimeMs ?? 0, wf?.mtimeMs ?? 0, main?.mtimeMs ?? 0),
+          stampKey: `${sub?.mtimeMs ?? 0}/${wf?.mtimeMs ?? 0}/${main?.mtimeMs ?? 0}`,
         });
       }
     }
@@ -672,6 +711,32 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     return e;
   }
 
+  /** 본 세션 transcript의 터미널 명령 — 처음엔 끝 RUNS_TAIL_BYTES만, 그 뒤로 덧붙은 줄만(파일이 줄면 처음부터 다시) */
+  async function sessionRuns(info: SessionDirInfo, ctx: PassCtx): Promise<BackgroundRun[]> {
+    const file = join(projectsDir, info.projDir, `${info.sessionId}.jsonl`);
+    const s = await statOrUndef(file);
+    if (!s) {
+      mainRuns.delete(file);
+      return [];
+    }
+    let e = mainRuns.get(file);
+    if (!e || s.size < e.cursor.offset) {
+      const cursor = s.size > RUNS_TAIL_BYTES ? { offset: s.size - RUNS_TAIL_BYTES, skipping: true } : newCursor();
+      e = { cursor, state: newRunsState(), seen: ctx.t, pass };
+      mainRuns.set(file, e);
+    }
+    touch(e, ctx.t);
+    if (s.size > e.cursor.offset) {
+      const st = e.state;
+      try {
+        await readTail(file, e.cursor, s.size, (r) => applyRunRecord(st, r));
+      } catch {
+        // 잠김·쓰는 중 — 읽은 데까지는 반영됐어요, 나머지는 다음 번에
+      }
+    }
+    return runsOf(e.state, ctx.t, ctx.cutoff);
+  }
+
   function buildAgent(
     id: string,
     file: AgentFileState | undefined,
@@ -700,6 +765,8 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
       const tk = agentTokens(file);
       if (tk.total > 0) a.tokens = tk;
       if (file.activity) a.activity = file.activity;
+      if (file.model) a.model = file.model;
+      if (file.effort) a.effort = file.effort;
     }
     if (j?.summary) a.summary = j.summary;
     return a;
@@ -847,13 +914,15 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     // 이 세션의 hot 목록을 새로 바꿔요
     for (const [p, dir] of hot) if (dir === info.sessionDir) hot.delete(p);
     for (const p of hotOut) hot.set(p, info.sessionDir);
-    if (subagents.length === 0 && workflows.length === 0) return undefined;
+    const runs = ctx.scoped ? await sessionRuns(info, ctx) : [];
+    if (subagents.length === 0 && workflows.length === 0 && runs.length === 0) return undefined;
 
     let running = countRunning(subagents);
     for (const wf of workflows) running += countRunning(wf.agents);
     let updatedAt: string | undefined;
     for (const a of subagents) updatedAt = laterIso(updatedAt, a.updatedAt);
     for (const wf of workflows) updatedAt = laterIso(updatedAt, wf.updatedAt);
+    for (const r of runs) updatedAt = laterIso(updatedAt, r.updatedAt);
     const main = await mainInfo(info, t);
     // 본 세션 cwd가 먼저 — 서브에이전트는 하위 폴더·worktree에서 돌 수 있어서 본 세션 cwd가 없을 때만 써요
     const cwd = main?.cwd ?? cwdOut.cwd;
@@ -868,6 +937,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
       updatedAt: updatedAt ?? iso(info.mtimeMs),
     };
     if (main?.title) out.title = main.title;
+    if (runs.length > 0) out.runs = runs;
     return out;
   }
 
@@ -880,7 +950,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     const hotDirs = new Set(hot.values());
     const out: SessionTasks[] = [];
     const scan = await scanSessions(o.sessionId);
-    const ctx: PassCtx = { t, cutoff, homes: scan.homes };
+    const ctx: PassCtx = { t, cutoff, homes: scan.homes, scoped: !full };
     for (const info of scan.infos) {
       if (info.mtimeMs < cutoff && !hotDirs.has(info.sessionDir)) {
         // 이 세션은 창 밖 — 남은 hot 표시도 지워요
@@ -899,7 +969,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
       const live = new Set(scan.infos.map((i) => i.sessionDir));
       for (const [p, dir] of hot) if (!live.has(dir)) hot.delete(p);
     }
-    sweepCache([agentFiles, metas, journals, scripts, dirLists, mains, runs, runRefs], t, pass, full);
+    sweepCache([agentFiles, metas, journals, scripts, dirLists, mains, mainRuns, runs, runRefs], t, pass, full);
     return out;
   }
 
@@ -921,6 +991,8 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
         // stale로 넘어가는 순간도 바뀜이에요(파일은 그대로여도)
         h.update(s ? `${p}|${s.size}|${s.mtimeMs}|${liveness(s.mtimeMs, t)}\n` : `${p}|gone\n`);
       }
+      // 터미널 명령이 시간이 지나 stale로 넘어가는 순간(파일은 그대로여도)
+      for (const [p, e] of [...mainRuns].sort(([a], [b]) => (a < b ? -1 : 1))) h.update(`${p}|runs|${runningCount(e.state, t)}\n`);
       return h.digest('hex');
     },
   };

@@ -158,5 +158,9 @@
   "It may be a tampered build. If needed, install a VSIX downloaded from the publisher's official source.": "변조된 빌드일 수 있어요. 필요하면 게시자의 공식 배포처에서 받은 VSIX로 설치하세요.",
   "Retry": "다시 시도",
   "{0} is not installed yet: {1}": "{0}이(가) 아직 설치되지 않았어요: {1}",
-  "{0} is installed. Reload the window to start it?": "{0}을(를) 설치했어요. 창을 다시 불러와 시작할까요?"
+  "{0} is installed. Reload the window to start it?": "{0}을(를) 설치했어요. 창을 다시 불러와 시작할까요?",
+  "No terminal commands in this session yet.": "이 세션에서 실행한 터미널 명령이 아직 없어요.",
+  "Commands Claude runs in the terminal appear here with their description and run time.": "Claude가 터미널에서 실행하는 명령이 설명·실행 시간과 함께 여기에 나와요.",
+  "background": "백그라운드",
+  "effort {0}": "effort {0}"
 }
