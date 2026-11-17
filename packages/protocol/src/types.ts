@@ -43,7 +43,15 @@ export interface WindowInfo {
   appCommit?: string;
   /** Claude·Codex·Mark42 버전 (스모크 기준) */
   extensions: ExtensionVersion[];
+  /**
+   * 이 창의 Mark42 확장이 처리하는 데몬 알림·기능(예: {@link CAPABILITY_QUIT_FOR_UPDATE}). 창은 연 뒤 다시 로드할 때까지 처음 읽은 확장으로 돌아서,
+   * 데몬은 확장 판 대신 이 목록으로 옛 확장을 가려요(개발 경로 확장은 판이 늘 0.1.0). 옛 확장은 보내지 않아요
+   */
+  capabilities?: string[];
 }
+
+/** 창 기능: `app.quitForUpdate`를 받으면 앱을 끝내요(«다시 시작해서 적용», 2026-11-17 확장부터) */
+export const CAPABILITY_QUIT_FOR_UPDATE = 'app.quitForUpdate';
 
 export type SessionStatus = 'idle' | 'busy' | 'waiting' | 'stopped';
 
@@ -193,6 +201,18 @@ export interface Mk42UpdateStatus {
   checkedAt?: string;
   /** 자동 받기·자동 설치 설정(옛 데몬은 없어요) */
   auto?: Mk42UpdateAuto;
+  /**
+   * «다시 시작해서 적용»(교훈 012) — 더 새 Mk42 앱 판이 깔렸는데 같은 프로필의 열린 Mk42 창은 아직 옛 판 main에서 돌아요. 새 창도 옛 판으로
+   * 열려요(다른 판이면 두 번째 main이 돼 웹뷰가 모두 깨져요). 창이 확인을 받은 뒤 app.restartToUpdate를 불러요. 해당 없음·옛 데몬이면 없어요.
+   * running = 옛 판(붙어 있는 옛 판 창 중 가장 높은 판), available = 다시 시작하면 쓸 가장 새 판(둘 다 앱 판, 예: 1.146.0 — 패키지 판 current와 달라요).
+   * restarting = 데몬이 옛 창을 닫고 옛 main이 끝나기(파이프와 그 판 설치 폴더의 프로세스가 모두 사라지기)를 기다리는 중 — 그동안 판을 정하지 않은 Mk42
+   * 창 띄우기는 거절돼요. failed = 지난 다시 시작이 멈춘 이유(timeout: 옛 main이 제한 시간 안에 끝나지 않았어요 — 저장 확인·실행 중인 작업을 묻는 창이
+   * 남았거나 그 창의 Mark42 확장이 옛 판일 수 있어요. 데몬은 아무것도 강제로 끄지 않아요. 이미 닫힌 창은 아직 떠 있는 옛 main으로 다시 열고, 남은 창은
+   * 옛 main이 끝나면(최대 30분 지켜봐요) 새 판으로 다시 열어요), error = 그 한 줄(영어).
+   * needsReload = 이 옛 판들의 붙은 창이 모두 app.quitForUpdate를 모르는 옛 Mark42 확장이에요(WindowInfo.capabilities) — 다시 시작을 시작하지 않아요.
+   * 그 창 하나를 다시 로드하거나 직접 닫으라고 안내해요.
+   */
+  appRestart?: { running: string; available: string; restarting?: boolean; failed?: 'timeout'; error?: string; needsReload?: string[] };
 }
 
 /** 백그라운드 작업(워크플로우·서브에이전트) 상태. stale = 끝났다는 기록 없이 한동안 움직임이 없음(끊김·중단) */
@@ -233,6 +253,18 @@ export interface BackgroundAgent {
   effort?: string;
 }
 
+/** 명령으로 띄우는 에이전트 CLI(데몬이 명령어 자리만 보고 판별 — tasks/agentCli.ts) */
+export type AgentCli = 'claude' | 'codex' | 'grok' | 'agy';
+export const AGENT_CLIS: readonly AgentCli[] = ['claude', 'codex', 'grok', 'agy'];
+
+/** 명령 하나 안의 에이전트 CLI 호출 하나(일을 시키는 호출만 — --help·--version·models 같은 확인 호출은 빼요). 값은 허용 목록 모양만 */
+export interface AgentCliCall {
+  cli: AgentCli;
+  /** 명령에 준 모델(없으면 그 CLI 기본값 — 데몬은 다른 도구의 설정 파일을 읽지 않아요) */
+  model?: string;
+  effort?: string;
+}
+
 /** 세션이 띄운 터미널 명령 하나(Claude Bash·PowerShell 도구) — 명령 전문은 싣지 않고 모델이 붙인 설명만 */
 export interface BackgroundRun {
   /** 도구 호출 id(toolu_…) */
@@ -250,6 +282,13 @@ export interface BackgroundRun {
   startedAt: string;
   endedAt?: string;
   updatedAt: string;
+  /**
+   * 이 명령이 띄운 에이전트 CLI 호출(명령 하나 = 블록 하나, 호출마다 뱃지). 있으면 «작업»의 에이전트 CLI 블록이고 «실행»에서는 빠져요.
+   * 옛 확장은 이 필드를 몰라 «실행»에 그대로 보여요.
+   */
+  calls?: AgentCliCall[];
+  /** 서브에이전트·워크플로우 agent가 띄운 명령이면 그 agent(본 세션이 띄웠으면 없음) */
+  origin?: { agentId: string; label?: string; runId?: string };
 }
 
 /** Claude Code 워크플로우 실행 하나 */
@@ -281,8 +320,10 @@ export interface SessionTasks {
   subagents: BackgroundAgent[];
   /** 터미널 명령(Claude만, 실행 중 먼저 — 옛 데몬은 없음) */
   runs?: BackgroundRun[];
-  /** 실행 중인 agent 수(워크플로우 포함 — 터미널 명령은 세지 않아요) */
+  /** 실행 중인 agent 수(워크플로우 포함 — 터미널 명령은 세지 않아요. 에이전트 CLI 블록도 여기엔 없어요 → cliRunning) */
   running: number;
+  /** 실행 중인 에이전트 CLI 블록 수(runs 중 calls 있는 것 — 옛 데몬은 없음). 새 확장·통합 창은 running + cliRunning을 실행 중으로 봐요 */
+  cliRunning?: number;
   tokens: TokenUsage;
   updatedAt: string;
 }

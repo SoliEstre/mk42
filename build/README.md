@@ -23,6 +23,7 @@
 | `agentHostEnablementService.ts` | Agent Host 끄기(D21 — copilot-runtime.exe·agentHost 프로세스 없음) |
 | `windowsMainService.ts` | Agents 창 열기 막기(Mk42) |
 | `extensionManagementService.ts` + 기본값 `extensions.verifySignature: false` | Code - OSS에는 Microsoft 서명 검사 모듈이 없어서 갤러리(Open VSX) 설치가 모두 «Signature verification was not executed»로 실패 → 서명 검사 기본 끔(VSCodium과 같음, 사용자 결정 2026-10-27). 설정에서 켤 수는 있어요 |
+| `src/vs/code/electron-main/main.ts` `claimInstance` | 다른 판 main이 같은 `--user-data-dir`로 떠 있으면(Windows `\\.\pipe\<스코프>-<판>-main-sock` 목록, 연결하지 않음) 자기 파이프를 놓고 안내 대화 상자를 띄운 뒤 끝내요 — 한 프로필에 main 둘이면 웹뷰가 모두 실패해서(교훈 012). 같은 user-data 경로로 뜨는 실행만 막아요(데몬·판을 지정한 실행·같은 `--user-data-dir`). `mark42://` 처리기와 손 실행은 `--user-data-dir` 없이 `%APPDATA%/Mk42`로 떠서 데몬 프로필(`~/.mk42/user-data`)과 스코프가 달라 여기 걸리지 않아요(다른 프로필이라 웹뷰 충돌도 없음). 두 판이 같은 순간에 뜨면 둘 다 물러설 수 있어요(다시 열면 돼요) |
 | `src/vs/mark42/common/mark42Defaults.ts` (+ `main.ts`·`workbench.desktop.main.ts`에서 import) | 기본값: 내장 AI·Agent Host 끔, 텔레메트리·실험·업데이트 끔, 창 복원은 데몬이, 시작 화면·팁·추천 끔 |
 
 패치를 고칠 때는 작업 폴더에서 고친 뒤 `git add -N <새 파일>; git diff -- . ':!product.json' ':!resources/win32/code.ico' ':!src/vs/workbench/browser/media/code-icon.svg' > <repo>\build\patches\0001-mark42-core.patch`로 다시 뽑아요(아이콘 두 개는 `apply.mjs`가 복사해요).

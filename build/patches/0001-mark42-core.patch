@@ -151,17 +151,92 @@ index 9d26615159..12ed3280e9 100644
  		}
  
 diff --git a/src/vs/code/electron-main/main.ts b/src/vs/code/electron-main/main.ts
-index 93527ec8a9..a1ded99d46 100644
+index 93527ec8a9..d06d3f6e3e 100644
 --- a/src/vs/code/electron-main/main.ts
 +++ b/src/vs/code/electron-main/main.ts
-@@ -4,6 +4,7 @@
+@@ -4,9 +4,10 @@
   *--------------------------------------------------------------------------------------------*/
  
  import '../../platform/update/common/update.config.contribution.js';
 +import '../../mark42/common/mark42Defaults.js';
  
  import { app, dialog } from 'electron';
- import { unlinkSync, promises } from 'fs';
+-import { unlinkSync, promises } from 'fs';
++import { unlinkSync, promises, readdirSync } from 'fs';
+ import { URI } from '../../base/common/uri.js';
+ import { coalesce, distinct } from '../../base/common/arrays.js';
+ import { Promises, retry } from '../../base/common/async.js';
+@@ -478,6 +479,24 @@ class CodeMain {
+ 			throw new ExpectedError('Sent env to running instance. Terminating...');
+ 		}
+ 
++		// Mark42: the main pipe name carries the version, so a Mk42 of another version that is already
++		// running on this user data dir is not found above and we would become a second main on the same
++		// profile (Chromium cannot share it: every webview fails to register its service worker).
++		// Release our pipe, tell the user, and quit instead.
++		const otherVersions = this.mark42OtherVersionMains(environmentMainService, productService, logService);
++		if (otherVersions.length > 0) {
++			mainProcessNodeIpcServer.dispose();
++			const other = `${productService.nameShort} ${otherVersions.join(', ')}`;
++			const ko = app.getLocale().toLowerCase().startsWith('ko');
++			this.showStartupWarningDialog(
++				ko ? `${other}이(가) 같은 데이터 폴더로 이미 떠 있어요.` : `${other} is already running with this data folder.`,
++				ko ? `그 창들을 모두 닫은 뒤 다시 열어 주세요(${productService.nameShort} 업데이트 뒤에는 «다시 시작해서 적용»을 눌러 주세요).` : `Close its windows first, then open ${productService.nameShort} again (after an update use “Restart to apply”).`,
++				productService
++			);
++
++			throw new ExpectedError(`Mark42: ${other} is already running on ${environmentMainService.userDataPath}. Terminating...`);
++		}
++
+ 		// Print --status usage info
+ 		if (environmentMainService.args.status) {
+ 			console.log(localize('statusWarning', "Warning: The --status argument can only be used if {0} is already running. Please run it again after {0} has started.", productService.nameShort));
+@@ -492,6 +511,45 @@ class CodeMain {
+ 		return mainProcessNodeIpcServer;
+ 	}
+ 
++	/**
++	 * Mark42: versions of other mains that hold a main pipe for this user data dir. Windows only — the
++	 * pipe list is read by name (never connected to); on macOS / Linux the socket keeps only the first
++	 * four characters of the version (1.143.x and 1.146.x share one socket and simply forward) and a
++	 * stale socket file cannot be told from a live one without connecting.
++	 */
++	private mark42OtherVersionMains(environmentMainService: IEnvironmentMainService, productService: IProductService, logService: ILogService): string[] {
++		if (!isWindows) {
++			return [];
++		}
++
++		try {
++			// `\\.\pipe\<scope>-<version>-main-sock` from createStaticIPCHandle()
++			const pipeDir = '\\\\.\\pipe\\';
++			const ownName = environmentMainService.mainIPCHandle.substring(pipeDir.length);
++			const ownSuffix = `-${productService.version}-main-sock`;
++			if (!environmentMainService.mainIPCHandle.startsWith(pipeDir) || !ownName.endsWith(ownSuffix)) {
++				return [];
++			}
++			const prefix = `${ownName.substring(0, ownName.length - ownSuffix.length)}-`;
++
++			const versions: string[] = [];
++			for (const name of readdirSync(pipeDir)) {
++				if (name !== ownName && name.startsWith(prefix) && name.endsWith('-main-sock')) {
++					const version = name.substring(prefix.length, name.length - '-main-sock'.length);
++					if (version && version !== productService.version && !versions.includes(version)) {
++						versions.push(version);
++					}
++				}
++			}
++
++			return versions;
++		} catch (error) {
++			logService.warn('Mark42: could not list the main pipes of other versions', error);
++
++			return [];
++		}
++	}
++
+ 	private handleStartupDataDirError(environmentMainService: IEnvironmentMainService, productService: IProductService, error: NodeJS.ErrnoException): void {
+ 		if (error.code === 'EACCES' || error.code === 'EPERM') {
+ 			const directories = coalesce([environmentMainService.userDataPath, environmentMainService.extensionsPath, XDG_RUNTIME_DIR]).map(folder => getPathLabel(URI.file(folder), { os: OS, tildify: environmentMainService }));
 diff --git a/src/vs/mark42/common/mark42Defaults.ts b/src/vs/mark42/common/mark42Defaults.ts
 new file mode 100644
 index 0000000000..42d4ef841d

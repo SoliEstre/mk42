@@ -1,5 +1,5 @@
 // 백그라운드 작업(워크플로우·서브에이전트) 표시용 순수 함수 — 토큰·걸린 시간 줄임 표기, 지금 단계, 합계. vscode에 기대지 않아요.
-import type { BackgroundAgent, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks, TokenUsage } from '@mark42/protocol';
+import type { AgentCliCall, BackgroundAgent, BackgroundRun, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks, TokenUsage } from '@mark42/protocol';
 import { sourceText, type Translate } from './l10n.ts';
 
 /** 412 → '412', 1234 → '1.2k', 412_345 → '412k', 1_234_567 → '1.2M' */
@@ -73,7 +73,8 @@ export interface TasksTotals {
 export function tasksTotals(t: SessionTasks | undefined): TasksTotals {
   if (!t) return { running: 0, tokens: 0 };
   const running = Number.isFinite(t.running) ? Math.max(0, t.running) : 0;
-  return { running, tokens: t.tokens?.total ?? 0 };
+  // 에이전트 CLI 블록(실행 중)도 «작업»의 실행 중 — 데몬의 running에는 들어 있지 않아요
+  return { running: running + runningCliBlocks(t), tokens: t.tokens?.total ?? 0 };
 }
 
 /** 보기 설명·상태 표시줄용 한 줄: '2 실행 중 · 412k' / '412k' / '' */
@@ -128,7 +129,42 @@ export function sortAgents(list: readonly BackgroundAgent[]): BackgroundAgent[] 
 /** 모델 표시(공용) — 작업 보기에서 이 이름으로 써요 */
 export { modelEffortText as modelText, shortModelName as shortModel } from '@mark42/protocol';
 
-/** 실행 중인 터미널 명령 수(«실행» 보기 배지) */
+/** «실행» 보기에 그릴 보통 명령(에이전트 CLI 블록은 «작업»으로) */
+export function plainRuns(t: SessionTasks | undefined): BackgroundRun[] {
+  return t?.runs?.filter((r) => !r.calls?.length) ?? [];
+}
+
+/** «작업»에 그릴 에이전트 CLI 블록(명령 하나 = 블록 하나) */
+export function cliBlocks(t: SessionTasks | undefined): BackgroundRun[] {
+  return t?.runs?.filter((r) => (r.calls?.length ?? 0) > 0) ?? [];
+}
+
+/** 실행 중인 터미널 명령 수(«실행» 보기 배지 — 에이전트 CLI 블록은 빼요) */
 export function runningRuns(t: SessionTasks | undefined): number {
-  return t?.runs?.filter((r) => r.status === 'running').length ?? 0;
+  return plainRuns(t).filter((r) => r.status === 'running').length;
+}
+
+export function runningCliBlocks(t: SessionTasks | undefined): number {
+  return cliBlocks(t).filter((r) => r.status === 'running').length;
+}
+
+/** 블록의 뱃지 — 이어진 같은 CLI는 하나로 묶어 수를 붙여요(grok ×3). 툴팁용 모델·effort 목록도 */
+export interface CliBadge {
+  cli: AgentCliCall['cli'];
+  count: number;
+  /** 'gpt-6-astra · xhigh' 같은 줄(호출마다, 값이 있을 때만) */
+  details: string[];
+}
+
+export function cliBadges(calls: readonly AgentCliCall[] | undefined): CliBadge[] {
+  const out: CliBadge[] = [];
+  for (const c of calls ?? []) {
+    const d = [c.model, c.effort].filter(Boolean).join(' · ');
+    const last = out.at(-1);
+    if (last && last.cli === c.cli) {
+      last.count++;
+      if (d) last.details.push(d);
+    } else out.push({ cli: c.cli, count: 1, details: d ? [d] : [] });
+  }
+  return out;
 }

@@ -4,6 +4,7 @@ import { promises as fsp } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { basename, join } from 'node:path';
 import {
+  CAPABILITY_QUIT_FOR_UPDATE,
   ErrorCode,
   PROTOCOL_VERSION,
   RpcError,
@@ -15,6 +16,8 @@ import {
   type AgentExtensionUpdate,
   type AgentKind,
   type AgentOpenSessionParams,
+  type AppRestartToUpdateParams,
+  type AppRestartToUpdateResult,
   type AutostartState,
   type DaemonNotification,
   type DaemonNotificationMap,
@@ -44,7 +47,8 @@ import { computeProof, isValidChallenge } from '@mark42/protocol/auth';
 import { socketChannel } from '@mark42/protocol/node';
 import { folderIdFor, normalizePath, pathKey, samePath } from '@mark42/protocol/paths';
 import type { LiveSession, SessionIndexer } from './indexers/types.ts';
-import { LaunchError, type AppLauncherLike, type LaunchOutcome } from './launcher.ts';
+import { LaunchError, type AppLauncherLike, type LaunchOutcome, type Mark42AppState } from './launcher.ts';
+import { compareVersions } from './extensions.ts';
 import { GitCloneError, removePartialClone, runGitClone, type GitCloneFn } from './gitClone.ts';
 import { createMemoryLogger, errMsg, type Logger } from './log.ts';
 import type { AppProduct, DaemonSettings, Registry, SlotRecord } from './registry.ts';
@@ -185,7 +189,76 @@ export interface DaemonCoreOptions {
     /** update.setAuto 뒤 — 설정을 다시 읽어 알리고(자동 받기를 켰으면 기다리던 판을 받아요) */
     settingsChanged?(): Promise<Mk42UpdateStatus>;
   };
+  /**
+   * «다시 시작해서 적용»(app.restartToUpdate) 시간 — 옛 main이 끝나기를 기다리는 시간(기본 90초), 파이프·프로세스 확인 간격(기본 1초),
+   * 끝난 뒤 다시 열기 전 쉬는 시간(기본 1.5초 — 프로세스가 끝난 뒤의 여유), 옛 main 프로세스를 확인하지 못했을 때 쉬는 시간(기본 8초 — 파이프가 사라진 뒤
+   * 확장 호스트 정리 최대 6초를 넘게), 제한 시간이 지난 뒤 남은 창을 위해 옛 main을 지켜보는 시간(기본 30분)·간격(기본 5초). 시험용
+   */
+  appRestart?: { timeoutMs?: number; pollMs?: number; settleMs?: number; unverifiedSettleMs?: number; watchMs?: number; watchPollMs?: number };
 }
+
+type AppRestartInfo = NonNullable<Mk42UpdateStatus['appRestart']>;
+
+/** 다시 시작 전에 기록한 옛 판 창 하나 — 새 판으로 같은 자리를 다시 열어요 */
+interface RestartWindow {
+  role: WindowRole;
+  appVersion: string;
+  folderPath?: string;
+  workspaceFile?: string;
+  slotId?: string;
+  sessionId?: string;
+}
+
+/** 도는 다시 시작 — 옛 main이 끝나기를 기다리는 동안 */
+interface RestartRun {
+  running: string;
+  available: string;
+  /** 끝나기를 기다리는 옛 판 */
+  versions: string[];
+  /** 닫기를 부탁한 옛 판 창 — 포커스·세션·슬롯 찾기에서 빼요(C10) */
+  clients: Set<Client>;
+  windows: RestartWindow[];
+  /** 닫기 부탁 전에 기록한 옛 판 설치 폴더의 프로세스(판마다). undefined·빈 목록 = 확인 못 함(파이프만 보고 더 오래 쉬어요) */
+  pids: Map<string, number[] | undefined>;
+}
+
+/** 제한 시간이 지난 다시 시작 — 남은 옛 main이 끝나면 다시 열지 못한 창을 새 판으로 열어요(C9) */
+interface RestartWatch {
+  available: string;
+  versions: string[];
+  pids: Map<string, number[] | undefined>;
+  windows: RestartWindow[];
+  /** 이때까지만 지켜봐요 */
+  until: number;
+  timer?: ReturnType<typeof setTimeout>;
+  checking: boolean;
+}
+
+/** 같은 창인지(다시 열 때 이미 열려 있으면 건너뛰어요): 에이전트 창은 슬롯, 그 밖은 역할 + 워크스페이스(없으면 폴더) */
+function restartWindowKey(w: Pick<WindowInfo, 'role' | 'slotId' | 'workspaceFile' | 'folderPath'>): string {
+  if (agentOfRole(w.role) && w.slotId) return `${w.role}:slot:${w.slotId}`;
+  return `${w.role}:${w.workspaceFile || w.folderPath ? pathKey((w.workspaceFile || w.folderPath)!) : ''}`;
+}
+
+function toRestartWindow(w: WindowInfo): RestartWindow {
+  return {
+    role: w.role,
+    appVersion: w.appVersion,
+    ...(w.folderPath ? { folderPath: w.folderPath } : {}),
+    ...(w.workspaceFile ? { workspaceFile: w.workspaceFile } : {}),
+    ...(w.slotId ? { slotId: w.slotId } : {}),
+    ...(w.sessionId ? { sessionId: w.sessionId } : {}),
+  };
+}
+
+/** WindowInfo.capabilities — 짧은 문자열 목록만 받아요 */
+function windowCapabilities(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out = v.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 64).slice(0, 32);
+  return out.length ? out : undefined;
+}
+
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const VALID_ROLES: ReadonlySet<string> = new Set<WindowRole>(['hub', 'agent-claude', 'agent-codex', 'editor']);
 
@@ -243,6 +316,11 @@ export function parseTasksListParams(raw: unknown): TasksListParams {
     }
     out.limit = p.limit;
   }
+  // 모르는 항목은 버려요(새 통합 창이 옛 데몬에 보내도, 옛 통합 창이 새 데몬에 안 보내도 그대로 돌게)
+  if (Array.isArray(p.include)) {
+    const include = p.include.filter((x): x is 'cliRuns' => x === 'cliRuns');
+    if (include.length) out.include = include;
+  }
   return out;
 }
 
@@ -270,6 +348,17 @@ export class DaemonCore {
   #resuming = new Set<string>();
   /** Mk42 업데이트 «지금 설치할까요?»를 이미 물은 판(창 하나에만, 데몬 실행마다 판마다 한 번) */
   #announcedUpdate: string | undefined;
+  /** 마지막으로 알린 appRestart — update.changed·update.* 결과에 붙여요 */
+  #appRestart: AppRestartInfo | undefined;
+  #appRestartTimer: ReturnType<typeof setTimeout> | undefined;
+  /** appRestart 다시 재기를 차례로(늦게 끝난 옛 값이 새 값을 덮지 않게) */
+  #appRestartChain: Promise<void> = Promise.resolve();
+  /** 도는 다시 시작(app.restartToUpdate) */
+  #restartRun: RestartRun | undefined;
+  /** 제한 시간이 지난 뒤 남은 옛 main을 지켜봐요(C9) */
+  #restartWatch: RestartWatch | undefined;
+  /** 지난 다시 시작이 멈춘 이유 — 그 옛 판 창이 남아 있는 동안 appRestart.failed로 보여요 */
+  #restartFailed: { running: string; available: string; failed: 'timeout'; error: string } | undefined;
 
   constructor(opts: DaemonCoreOptions) {
     this.#opts = opts;
@@ -297,6 +386,9 @@ export class DaemonCore {
     this.#closed = true;
     if (this.#stateTimer) clearTimeout(this.#stateTimer);
     this.#stateTimer = undefined;
+    if (this.#appRestartTimer) clearTimeout(this.#appRestartTimer);
+    this.#appRestartTimer = undefined;
+    this.#stopRestartWatch();
     for (const c of [...this.#clients.values()]) c.peer.close();
     this.#clients.clear();
     for (const idx of this.#opts.indexers) {
@@ -423,10 +515,10 @@ export class DaemonCore {
         void this.#focus(bySession);
         return { status: 'focused', windowId: bySession.window.windowId, slotId: bySession.window.slotId };
       }
-      // 2) 그 세션에 묶인 슬롯이 있으면 그 슬롯, 없으면 새 슬롯
-      const slot =
-        this.registry.data.slots.find((s) => s.agent === agent && s.sessionId === sessionId) ??
-        (await this.#newSlot(folderPath, agent, sessionId));
+      // 2) 그 세션에 묶인 슬롯이 있으면 그 슬롯, 없으면 새 슬롯(다시 시작 중이면 슬롯을 만들기 전에 거절 — 빈 슬롯 기록이 남지 않게)
+      const bound = this.registry.data.slots.find((s) => s.agent === agent && s.sessionId === sessionId);
+      if (!bound) this.#refuseDuringRestart(this.#productFor(folderPath));
+      const slot = bound ?? (await this.#newSlot(folderPath, agent, sessionId));
       const bySlot = this.#findClients((c) => c.window?.role === role && c.window.slotId === slot.slotId)[0];
       if (bySlot?.window) {
         const op = openParams();
@@ -449,6 +541,7 @@ export class DaemonCore {
         return { status: 'focused', windowId: w.window.windowId, slotId: w.window.slotId };
       }
     }
+    this.#refuseDuringRestart(this.#productFor(folderPath));
     const slot = await this.#newSlot(folderPath, agent);
     const requestId = this.#newId('request');
     this.#queueAgent(slot.slotId, {
@@ -559,8 +652,10 @@ export class DaemonCore {
     return this.#opts.pendingTtlMs ?? 5 * 60_000;
   }
 
+  /** 포커스·알림을 보낼 창 찾기 — 다시 시작이 닫는 중인 옛 판 창은 빼요(끝나 가는 main에 보낸 세션·링크는 사라지고, 포커스가 옛 판 exe를 다시 띄울 수 있어요 — C10) */
   #findClients(pred: (c: Client) => boolean): Client[] {
-    return [...this.#clients.values()].filter(pred).sort((a, b) => b.focusedAt - a.focusedAt);
+    const closing = this.#restartRun?.clients;
+    return [...this.#clients.values()].filter((c) => !closing?.has(c) && pred(c)).sort((a, b) => b.focusedAt - a.focusedAt);
   }
 
   #editorWindow(folderPath: string): Client | undefined {
@@ -626,10 +721,11 @@ export class DaemonCore {
     this.#pendingBySlot.set(slotId, { params, expiresAt: this.#now() + this.#pendingTtl() });
   }
 
-  async #launchSlot(slot: SlotRecord, role: WindowRole): Promise<void> {
+  /** 슬롯 창 띄우기(새 창·재개·다시 시작). appVersion·appProduct를 주면 그 앱·판으로(다시 시작 = 가장 새 Mk42) */
+  async #launchSlot(slot: Pick<SlotRecord, 'slotId' | 'folderPath'>, role: WindowRole, appVersion?: string, appProduct?: AppProduct): Promise<void> {
     try {
       const ws = await this.#ensureWs({ role, folderPath: slot.folderPath, slotId: slot.slotId });
-      await this.#launch(ws.file, role, undefined, false, this.#productFor(slot.folderPath));
+      await this.#launch(ws.file, role, appVersion, false, appProduct ?? this.#productFor(slot.folderPath));
     } catch (e) {
       this.#pendingBySlot.delete(slot.slotId);
       throw e;
@@ -651,7 +747,20 @@ export class DaemonCore {
     return (this.#opts.uiLanguage ?? osUiLanguage)().catch(() => 'en' as const);
   }
 
+  /**
+   * C10: 다시 시작이 옛 main을 끝내기를 기다리는 동안 Mk42 창 띄우기 — 판을 정하지 않았거나 끝나는 옛 판이면 거절해요(LaunchFailed). 실행기는 아직 목록에
+   * 있는 옛 main을 골라서 창이 끝나 가는 main으로 가거나(창을 잃거나 그 main을 붙잡아 다시 시작이 멈춰요), 파이프가 사라진 뒤면 옛 판 main을 새로
+   * 띄워요. 쌓아 두었다 나중에 여는 것보다 단순하고, 부른 쪽(통합 창·재개·링크)이 오류를 보여 줘요. 보통 몇 초예요. 다시 열기는 새 판을 정해서 지나가요.
+   */
+  #refuseDuringRestart(appProduct: AppProduct | undefined, appVersion?: string): void {
+    const run = this.#restartRun;
+    if (!run || (appProduct ?? this.#productFor(undefined)) !== 'mark42') return;
+    if (appVersion !== undefined && !run.versions.includes(appVersion)) return;
+    throw new RpcError(ErrorCode.LaunchFailed, `Mk42 is restarting to apply ${run.available}; try again when its windows have reopened`);
+  }
+
   async #launch(workspaceFile: string, role: WindowRole, appVersion?: string, exact = false, appProduct?: AppProduct): Promise<LaunchOutcome> {
+    this.#refuseDuringRestart(appProduct, appVersion);
     try {
       return await this.#opts.launcher.launch({ workspaceFile, role, appVersion, exactVersion: exact, appProduct });
     } catch (e) {
@@ -663,7 +772,7 @@ export class DaemonCore {
   /** 포커스 = 같은 워크스페이스를 같은 버전 Code.exe로 다시 실행(VS Code가 기존 창을 앞으로 가져와요). */
   async #focus(c: Client): Promise<void> {
     const w = c.window;
-    if (!w) return;
+    if (!w || this.#restartRun?.clients.has(c)) return; // 닫는 중인 옛 판 창 — 옛 exe를 다시 띄우지 않아요(C10)
     let target = w.workspaceFile;
     if (!target) {
       try {
@@ -675,14 +784,377 @@ export class DaemonCore {
     if (!target) return;
     try {
       // 그 창의 앱으로(같은 버전 번호의 다른 앱으로 띄우면 창이 하나 더 떠요). appName을 안 보내는 옛 확장이면 그 폴더의 앱
-      const product: AppProduct = w.appName
-        ? (this.#opts.appProductOfName?.(w.appName) ?? (w.appName === 'Mark42' ? 'mark42' : 'vscode'))
-        : this.#productFor(w.folderPath);
+      const product: AppProduct = this.#productOfWindow(w) ?? this.#productFor(w.folderPath);
       await this.#launch(target, w.role, w.appVersion, true, product);
     } catch (e) {
       // 같은 버전 설치본이 없으면 다른 버전으로 열면 창이 하나 더 떠요 — 포커스는 포기해요
       this.#log.warn(`focus ${w.windowId} skipped: ${errMsg(e)}`);
     }
+  }
+
+  /** 창이 hello로 알린 앱 이름 → 앱(판 덧층, 없으면 'Mark42'만 mark42). appName을 안 보내는 옛 확장이면 undefined */
+  #productOfWindow(w: WindowInfo): AppProduct | undefined {
+    if (!w.appName) return undefined;
+    return this.#opts.appProductOfName?.(w.appName) ?? (w.appName === 'Mark42' ? 'mark42' : 'vscode');
+  }
+
+  // ---- «다시 시작해서 적용»(교훈 012) — 옛 판 main에 붙은 Mk42 창을 사용자 확인 뒤 새 판으로 다시 열어요
+
+  /** 같은 프로필에 main이 떠 있는 옛 판(가장 새 판보다 낮은) Mark42 창. 통합 창(hub-ws)은 Mk42 main이 아니라 빼요 */
+  #oldMark42Clients(state: Mark42AppState): Client[] {
+    return [...this.#clients.values()].filter((c) => {
+      const w = c.window;
+      return (
+        c.kind === 'pipe' &&
+        !c.peer.closed &&
+        w !== undefined &&
+        this.#productOfWindow(w) === 'mark42' &&
+        state.live.includes(w.appVersion) &&
+        compareVersions(state.newest, w.appVersion) > 0
+      );
+    });
+  }
+
+  /**
+   * C11: 붙은 창 중 app.quitForUpdate를 아는 창(WindowInfo.capabilities)이 하나도 없는 옛 판(높은 판 먼저). 창은 다시 로드할 때까지 처음 읽은 Mark42
+   * 확장으로 돌아서 옛 확장은 그 알림을 무시해요 — 그 판 창 하나만 끝내도 그 main 전체가 끝나니까 판마다 하나면 돼요.
+   */
+  #versionsNeedingReload(old: Client[]): string[] {
+    const versions = [...new Set(old.map((c) => c.window!.appVersion))];
+    return versions
+      .filter((v) => !old.some((c) => c.window!.appVersion === v && c.window!.capabilities?.includes(CAPABILITY_QUIT_FOR_UPDATE) === true))
+      .sort((a, b) => compareVersions(b, a));
+  }
+
+  async #computeAppRestart(): Promise<AppRestartInfo | undefined> {
+    const launcher = this.#opts.launcher;
+    const restarting = (): AppRestartInfo | undefined => {
+      const r = this.#restartRun;
+      return r ? { running: r.running, available: r.available, restarting: true } : undefined;
+    };
+    if (this.#restartRun) return restarting();
+    if (!launcher.mark42AppState) return undefined;
+    let state: Mark42AppState | undefined;
+    try {
+      state = await launcher.mark42AppState();
+    } catch (e) {
+      // 파이프 목록을 못 읽었어요(모름) — 지난 값 그대로
+      this.#log.warn(`app restart check failed: ${errMsg(e)}`);
+      return this.#appRestart;
+    }
+    const during = restarting(); // 재는 사이에 다시 시작이 시작됐을 수 있어요
+    if (during) return during;
+    if (!state) return undefined;
+    const old = this.#oldMark42Clients(state);
+    if (old.length === 0) {
+      this.#restartFailed = undefined;
+      return undefined;
+    }
+    const running = old.map((c) => c.window!.appVersion).sort((a, b) => compareVersions(b, a))[0]!;
+    const info: AppRestartInfo = { running, available: state.newest };
+    const f = this.#restartFailed;
+    if (f && f.running === running && f.available === state.newest) {
+      info.failed = f.failed;
+      info.error = f.error;
+    }
+    const needsReload = this.#versionsNeedingReload(old);
+    if (needsReload.length > 0) info.needsReload = needsReload;
+    return info;
+  }
+
+  /** appRestart를 다시 재고 바뀌었으면 붙은 창 모두·통합 창에 update.changed */
+  refreshAppRestart(): Promise<void> {
+    const run = this.#appRestartChain.then(async () => {
+      const next = await this.#computeAppRestart();
+      if (this.#closed || JSON.stringify(next) === JSON.stringify(this.#appRestart)) return;
+      this.#appRestart = next;
+      if (next) this.#log.info(`app restart: ${JSON.stringify(next)}`);
+      this.notifyUpdateChanged(this.#opts.mk42Update?.status() ?? { state: 'disabled', current: 'unknown' });
+    });
+    this.#appRestartChain = run.catch((e) => this.#log.warn(`app restart refresh failed: ${errMsg(e)}`));
+    return this.#appRestartChain;
+  }
+
+  /** 창이 붙거나 떨어졌어요 — 잠깐 묶어서 appRestart를 다시 재고, 지켜보는 옛 main이 끝났는지도 봐요 */
+  #scheduleAppRestartRefresh(): void {
+    if (this.#closed || this.#appRestartTimer || !this.#opts.launcher.mark42AppState) return;
+    this.#appRestartTimer = setTimeout(() => {
+      this.#appRestartTimer = undefined;
+      void this.refreshAppRestart();
+      void this.#checkRestartWatch();
+    }, this.#opts.stateDebounceMs ?? 200);
+    this.#appRestartTimer.unref?.();
+  }
+
+  /** update 상태에 마지막 appRestart를 붙여요(없으면 빼요) */
+  #withAppRestart<T extends Mk42UpdateStatus>(s: T): T {
+    const { appRestart: _drop, ...rest } = s;
+    return (this.#appRestart ? { ...rest, appRestart: { ...this.#appRestart } } : rest) as T;
+  }
+
+  /**
+   * app.restartToUpdate — 사용자가 창에서 확인한 뒤에만 와요. 옛 판 Mark42 창을 기록하고 바로 답한 뒤, 옛 판 설치 폴더의 프로세스를 기록하고 그 창들에
+   * app.quitForUpdate를 보내요. 옛 main이 정말 끝나면(파이프와 기록한 프로세스가 모두 사라지면) 같은 창을 가장 새 판으로 다시 열어요. 제한 시간이 지나면
+   * 아무것도 강제로 끄지 않고 failed — 이미 닫힌 창은 아직 떠 있는 옛 main으로 다시 열고 남은 창은 옛 main이 끝날 때까지 지켜봐요(C9).
+   */
+  async restartToUpdate(p: AppRestartToUpdateParams): Promise<AppRestartToUpdateResult> {
+    if (p.available !== undefined && (typeof p.available !== 'string' || p.available.length > 64)) throw invalid('available must be a version string');
+    if (this.#restartRun) return { started: false, error: 'a restart is already in progress' };
+    const launcher = this.#opts.launcher;
+    if (!launcher.mark42AppState) return { started: false, error: 'this daemon cannot restart Mk42 windows' };
+    let state: Mark42AppState | undefined;
+    try {
+      state = await launcher.mark42AppState();
+    } catch (e) {
+      return { started: false, error: `could not tell which Mk42 apps are running (${errMsg(e)})` };
+    }
+    if (!state) return { started: false, error: 'no Mk42 app install with a known user-data folder' };
+    if (p.available !== undefined && p.available !== state.newest) return { started: false, error: `the newest Mk42 app is now ${state.newest}, not ${p.available}` };
+    if (this.#restartRun) return { started: false, error: 'a restart is already in progress' };
+    const old = this.#oldMark42Clients(state);
+    if (old.length === 0) return { started: false, error: 'no open Mk42 window runs an older app version' };
+    const needsReload = this.#versionsNeedingReload(old);
+    if (needsReload.length > 0) {
+      return {
+        started: false,
+        error: `Mk42 ${needsReload.join(', ')} windows run an older Mark42 extension that cannot restart them — reload one of those windows (Developer: Reload Window) or close them yourself`,
+      };
+    }
+    const versions = [...new Set(old.map((c) => c.window!.appVersion))].sort((a, b) => compareVersions(b, a));
+    const windows = old.map((c) => toRestartWindow(c.window!));
+    // 지난 다시 시작에서 아직 다시 열지 못한 창도 함께(그 지켜보기는 여기서 끝내요)
+    const watch = this.#restartWatch;
+    if (watch) {
+      for (const w of watch.windows) {
+        if (!this.#isWindowOpen(w) && !windows.some((x) => restartWindowKey(x) === restartWindowKey(w))) windows.push(w);
+      }
+      this.#stopRestartWatch();
+    }
+    const run: RestartRun = { running: versions[0]!, available: state.newest, versions, clients: new Set(old), windows, pids: new Map() };
+    this.#restartRun = run;
+    this.#restartFailed = undefined;
+    this.#log.info(`app restart: ${windows.length} window(s) on Mk42 ${versions.join(', ')} -> ${state.newest} (confirmed by the user)`);
+    void this.#runRestart(run).catch((e) => this.#log.error(`app restart failed: ${errMsg(e)}`));
+    return { started: true, windows: windows.length };
+  }
+
+  async #runRestart(run: RestartRun): Promise<void> {
+    const o = this.#opts.appRestart ?? {};
+    const timeoutMs = o.timeoutMs ?? 90_000;
+    const pollMs = o.pollMs ?? 1000;
+    try {
+      // 답이 먼저 나가게 다음 틱에(부른 창도 닫히는 창이에요)
+      await new Promise<void>((r) => setImmediate(r));
+      void this.refreshAppRestart();
+      // C8: 닫기 부탁 전에 옛 판 설치 폴더의 프로세스를 기록해요. main 파이프는 끝나기 시작할 때(onWillShutdown) 먼저 사라지고, 그 뒤에도 확장 호스트
+      // 정리(최대 6초)·저장소 기록·Chromium 종료 동안 프로필(Service Worker 데이터베이스)을 쥐고 있어요 — 그때 새 판을 띄우면 교훈 012가 그대로 생겨요
+      for (const v of run.versions) run.pids.set(v, await this.#appProcesses(v));
+      if (this.#closed) return;
+      for (const c of run.clients) {
+        if (!c.peer.closed && c.window) this.#notify(c, 'app.quitForUpdate', { appVersion: c.window.appVersion, nextVersion: run.available });
+      }
+      // 옛 main이 끝나기를 기다려요 — `\\.\pipe\` 목록(연결하지 않아요)과 기록한 프로세스만 봐요. 프로세스는 끄지 않아요
+      const deadline = Date.now() + timeoutMs;
+      let r = await this.#oldMainsRunning(run.versions, run.pids);
+      while (r.still.length > 0 && Date.now() < deadline && !this.#closed) {
+        await sleepMs(pollMs);
+        r = await this.#oldMainsRunning(run.versions, run.pids);
+      }
+      if (this.#closed) return;
+      if (r.still.length === 0) {
+        await sleepMs(this.#restartSettleMs(run.versions, run.pids));
+        if (this.#closed) return;
+        this.#restartRun = undefined; // 이제 다른 창 띄우기도 받아요(새 판이 떠요)
+        void this.refreshAppRestart();
+        await this.#reopenWindows(run.windows, run.available);
+        return;
+      }
+      // C9: 제한 시간 — 아직 붙어 있는 창이 끝내기를 막았어요(저장 확인·실행 중인 작업 확인, 또는 app.quitForUpdate를 모르는 옛 확장).
+      // 이미 닫힌 창은 지금 다시 열어요: 판을 정하지 않으면 실행기가 아직 떠 있는 옛 main을 골라요(두 번째 main을 만들지 않아요). 단 그 옛 main의 파이프가
+      // 목록에 보일 때만 — 파이프는 사라졌는데 프로세스가 남았거나 목록을 못 읽었으면 실행기가 새 판을 띄울 수 있어서 지켜보기에 맡겨요.
+      const reopenNow = r.piped !== undefined && r.piped.length > 0;
+      const still = r.still.join(', ');
+      const error =
+        `Mk42 ${still} did not close within ${Math.round(timeoutMs / 1000)} s — a window may be waiting for an answer (a save prompt or a running task) ` +
+        `or may run an outdated Mark42 extension; nothing was closed by force. ` +
+        (reopenNow ? `Windows that already closed reopen on Mk42 ${r.piped!.join(', ')}; the rest` : 'Its windows') +
+        ` reopen on ${run.available} once Mk42 ${still} exits`;
+      this.#log.warn(`app restart: ${error}`);
+      this.#restartFailed = { running: r.still[0]!, available: run.available, failed: 'timeout', error };
+      this.#restartRun = undefined;
+      void this.refreshAppRestart();
+      this.#startRestartWatch(run, r.still);
+      if (reopenNow) await this.#reopenWindows(run.windows, undefined);
+    } finally {
+      if (this.#restartRun === run) this.#restartRun = undefined;
+      void this.refreshAppRestart();
+    }
+  }
+
+  /** 그 판 설치 폴더의 프로세스 pid(C8). 실행기가 모르거나 목록을 못 읽으면 undefined(확인 못 함) */
+  async #appProcesses(version: string): Promise<number[] | undefined> {
+    const launcher = this.#opts.launcher;
+    if (!launcher.mark42AppProcesses) return undefined;
+    try {
+      return await launcher.mark42AppProcesses(version);
+    } catch (e) {
+      this.#log.warn(`app restart: could not list Mk42 ${version} processes (${errMsg(e)}); waiting longer after its pipe goes`);
+      return undefined;
+    }
+  }
+
+  /**
+   * 아직 끝나지 않은 옛 판(C8·C13): main 파이프가 남았거나, 파이프는 사라졌는데 기록한 프로세스가 남았거나, 목록을 못 읽었어요(모름 = 안 끝남).
+   * piped = 파이프가 남은 판(파이프 목록을 못 읽었으면 undefined).
+   */
+  async #oldMainsRunning(
+    versions: readonly string[],
+    pids: ReadonlyMap<string, number[] | undefined>,
+  ): Promise<{ still: string[]; piped: string[] | undefined }> {
+    const launcher = this.#opts.launcher;
+    let state: Mark42AppState | undefined;
+    try {
+      state = await launcher.mark42AppState?.();
+    } catch {
+      state = undefined;
+    }
+    if (!state) return { still: [...versions], piped: undefined };
+    const live = state.live;
+    const piped = versions.filter((v) => live.includes(v));
+    const still = [...piped];
+    for (const v of versions) {
+      if (piped.includes(v)) continue;
+      const snap = pids.get(v);
+      if (!snap?.length || !launcher.mark42AppProcesses) continue; // 확인 못 한 판은 파이프만 보고 더 오래 쉬어요(#restartSettleMs)
+      let now: number[] | undefined;
+      try {
+        now = await launcher.mark42AppProcesses(v, snap); // 기록한 pid가 다 끝났으면 목록(PowerShell) 없이 빨리 답해요
+      } catch (e) {
+        this.#log.debug(`app restart: Mk42 ${v} process check failed (${errMsg(e)}); still waiting`);
+      }
+      if (!now || now.some((pid) => snap.includes(pid))) still.push(v);
+    }
+    return { still, piped };
+  }
+
+  /** 옛 main이 끝난 뒤 다시 열기 전 쉬는 시간 — 프로세스를 확인하지 못한 판이 있으면 확장 호스트 정리(최대 6초)보다 길게 */
+  #restartSettleMs(versions: readonly string[], pids: ReadonlyMap<string, number[] | undefined>): number {
+    const o = this.#opts.appRestart ?? {};
+    const settle = o.settleMs ?? 1500;
+    return versions.some((v) => !pids.get(v)?.length) ? Math.max(settle, o.unverifiedSettleMs ?? 8000) : settle;
+  }
+
+  /** 그 자리의 Mk42 창이 지금 붙어 있는지(다시 열 때 건너뛰어요) */
+  #isWindowOpen(w: RestartWindow): boolean {
+    const key = restartWindowKey(w);
+    return [...this.#clients.values()].some((c) => c.kind === 'pipe' && !c.peer.closed && c.window !== undefined && restartWindowKey(c.window) === key);
+  }
+
+  /** 기록한 창 중 지금 열려 있지 않은 것을 다시 열어요(창 사이 간격은 재개와 같아요). appVersion이 없으면 실행기가 떠 있는 main을 골라요 */
+  async #reopenWindows(windows: readonly RestartWindow[], appVersion: string | undefined): Promise<void> {
+    const gap = this.#opts.resumeGapMs ?? this.registry.settings.resumeLaunchGapMs ?? 1000;
+    let tried = 0;
+    let failed = 0;
+    for (const w of windows) {
+      if (this.#closed) return;
+      if (this.#isWindowOpen(w)) continue;
+      if (tried > 0 && gap > 0) await sleepMs(gap);
+      tried++;
+      try {
+        await this.#relaunchWindow(w, appVersion);
+      } catch (e) {
+        failed++;
+        this.#log.warn(`app restart: reopening ${w.role} ${w.slotId ?? w.folderPath ?? w.workspaceFile ?? ''} failed: ${errMsg(e)}`);
+      }
+    }
+    if (tried > 0) this.#log.info(`app restart: reopened ${tried - failed}/${tried} window(s) on ${appVersion ?? 'the running Mk42'}`);
+  }
+
+  /** C9: 제한 시간이 지난 뒤 남은 옛 main을 지켜봐요 — 끝나면 기록한 창 중 열려 있지 않은 것을 새 판으로 열어요 */
+  #startRestartWatch(run: RestartRun, still: string[]): void {
+    this.#stopRestartWatch();
+    const o = this.#opts.appRestart ?? {};
+    this.#restartWatch = {
+      available: run.available,
+      versions: [...still],
+      pids: run.pids,
+      windows: [...run.windows],
+      until: Date.now() + (o.watchMs ?? 30 * 60_000),
+      checking: false,
+    };
+    this.#scheduleRestartWatch();
+  }
+
+  #scheduleRestartWatch(): void {
+    const w = this.#restartWatch;
+    if (!w || this.#closed || w.timer) return;
+    w.timer = setTimeout(() => {
+      w.timer = undefined;
+      void this.#checkRestartWatch();
+    }, this.#opts.appRestart?.watchPollMs ?? 5000);
+    w.timer.unref?.();
+  }
+
+  #stopRestartWatch(): void {
+    const w = this.#restartWatch;
+    if (w?.timer) clearTimeout(w.timer);
+    this.#restartWatch = undefined;
+  }
+
+  /** 지켜보는 옛 main이 끝났으면 남은 창을 새 판으로 열어요. 지켜보는 시간이 지나면 그만둬요(창은 그대로 — 다시 시작 단추를 다시 누를 수 있어요) */
+  async #checkRestartWatch(): Promise<void> {
+    const w = this.#restartWatch;
+    if (!w || w.checking || this.#closed || this.#restartRun) return;
+    w.checking = true;
+    try {
+      const { still } = await this.#oldMainsRunning(w.versions, w.pids);
+      if (this.#restartWatch !== w || this.#closed) return;
+      if (still.length > 0) {
+        if (Date.now() >= w.until) {
+          this.#log.info(`app restart: stopped watching Mk42 ${still.join(', ')}; its windows stay as they are`);
+          this.#stopRestartWatch();
+        }
+        return;
+      }
+      this.#stopRestartWatch();
+      this.#log.info(`app restart: Mk42 ${w.versions.join(', ')} exited; reopening the remaining windows on ${w.available}`);
+      await sleepMs(this.#restartSettleMs(w.versions, w.pids));
+      if (this.#closed) return;
+      await this.#reopenWindows(w.windows, w.available);
+      void this.refreshAppRestart();
+    } finally {
+      w.checking = false;
+      this.#scheduleRestartWatch();
+    }
+  }
+
+  /** 지켜보는 옛 main에 새로 붙은 Mk42 창 — 그 main이 끝나면 함께 새 판으로 다시 열어요 */
+  #trackWatchedWindow(client: Client): void {
+    const watch = this.#restartWatch;
+    const w = client.window;
+    if (!watch || !w || client.kind !== 'pipe' || !watch.versions.includes(w.appVersion) || this.#productOfWindow(w) !== 'mark42') return;
+    const rw = toRestartWindow(w);
+    if (!watch.windows.some((x) => restartWindowKey(x) === restartWindowKey(rw))) watch.windows.push(rw);
+  }
+
+  /** 기록한 창 하나를 다시 열어요 — 에이전트 창은 재개와 같은 길(대기 openSession + 슬롯 띄우기), 프롬프트·자동 전송 없이 세션만 다시 묶어요 */
+  async #relaunchWindow(w: RestartWindow, appVersion: string | undefined): Promise<void> {
+    const agent = agentOfRole(w.role);
+    if (agent && w.slotId && w.folderPath) {
+      const rec = this.registry.data.slots.find((s) => s.slotId === w.slotId);
+      const slot = { slotId: w.slotId, folderPath: rec?.folderPath ?? w.folderPath };
+      const sessionId = w.sessionId ?? rec?.sessionId;
+      if (sessionId) this.#queueAgent(slot.slotId, { requestId: this.#newId('request'), agent, sessionId, autoSend: false });
+      await this.#launchSlot(slot, w.role, appVersion, 'mark42');
+      return;
+    }
+    let target = w.workspaceFile;
+    if (!target && (w.role === 'hub' || (w.role === 'editor' && w.folderPath))) {
+      target = (await this.#ensureWs({ role: w.role, ...(w.folderPath ? { folderPath: w.folderPath } : {}) })).file;
+    }
+    target ??= w.folderPath;
+    if (!target) throw new Error('nothing to reopen (no workspace or folder)');
+    await this.#launch(target, w.role, appVersion, false, 'mark42');
   }
 
   async #live(agent?: AgentKind): Promise<LiveSession[]> {
@@ -705,7 +1177,8 @@ export class DaemonCore {
    * Mk42 자체 업데이트 상태가 바뀌었어요 — 붙은 창 모두와 통합 창에 `update.changed`. ready인 새 판은 창 하나에만 announce:true
    * (가장 최근에 포커스를 알린 창, 같으면 가장 최근에 붙은 창). 붙은 창이 없으면 다음에 hello하는 창이 받아요.
    */
-  notifyUpdateChanged(status: Mk42UpdateStatus): void {
+  notifyUpdateChanged(raw: Mk42UpdateStatus): void {
+    const status = this.#withAppRestart(raw);
     const target = this.#updateAnnounceTarget(status);
     for (const c of this.#clients.values()) {
       if (c.kind === 'hub-ws' || c.window !== undefined) c.peer.notify('update.changed', c === target ? { ...status, announce: true } : status);
@@ -726,8 +1199,9 @@ export class DaemonCore {
 
   /** hello 뒤: 아직 아무 창도 묻지 않은 ready 판이면 이 창이 물어요 */
   #announcePendingUpdate(client: Client): void {
-    const status = this.#opts.mk42Update?.status();
-    if (!status || client.peer.closed) return;
+    const raw = this.#opts.mk42Update?.status();
+    if (!raw || client.peer.closed) return;
+    const status = this.#withAppRestart(raw);
     if (this.#updateAnnounceTarget(status, client) === client) client.peer.notify('update.changed', { ...status, announce: true });
   }
 
@@ -749,6 +1223,7 @@ export class DaemonCore {
     if (client.window) {
       this.#log.info(`window ${client.window.windowId} (${client.window.role}) disconnected`);
       this.markChanged('windows');
+      this.#scheduleAppRestartRefresh();
     }
     // 통합 창이 따르던 창이 닫히면 남은 창 중에서 다시 골라요(남은 창이 없으면 마지막 테마 그대로)
     if (client.hubTheme) this.#pickTheme();
@@ -881,6 +1356,9 @@ export class DaemonCore {
       appName: typeof win.appName === 'string' ? win.appName.slice(0, 64) : undefined,
       extensions: Array.isArray(win.extensions) ? win.extensions : [],
     };
+    const capabilities = windowCapabilities(win.capabilities);
+    if (capabilities) info.capabilities = capabilities;
+    else delete info.capabilities;
     if (typeof win.folderPath === 'string' && win.folderPath) info.folderPath = normalizePath(win.folderPath);
     else delete info.folderPath;
     const agent = agentOfRole(info.role);
@@ -894,6 +1372,9 @@ export class DaemonCore {
     client.focusedAt = this.#now();
     this.#log.info(`hello ${windowId} role=${info.role} slot=${info.slotId ?? '-'} folder=${info.folderPath ?? '-'}`);
     this.markChanged('windows');
+    // 옛 판 Mk42 창이 붙었거나 새 판 창이 붙었어요 — «다시 시작해서 적용»을 다시 재요
+    this.#scheduleAppRestartRefresh();
+    this.#trackWatchedWindow(client);
     // 응답이 먼저 가도록 다음 틱에 대기 알림을 보내요
     setImmediate(() => {
       this.#deliverPending(client);
@@ -1036,15 +1517,16 @@ export class DaemonCore {
       },
       'update.status': async () => {
         const u = this.#opts.mk42Update;
-        if (!u) return { state: 'disabled', current: 'unknown' };
-        return u.refreshStatus ? u.refreshStatus() : u.status();
+        const s: Mk42UpdateStatus = !u ? { state: 'disabled', current: 'unknown' } : u.refreshStatus ? await u.refreshStatus() : u.status();
+        await this.refreshAppRestart();
+        return this.#withAppRestart(s);
       },
-      'update.check': async () => (this.#opts.mk42Update ? this.#opts.mk42Update.check() : { state: 'disabled', current: 'unknown' }),
+      'update.check': async () => this.#withAppRestart(this.#opts.mk42Update ? await this.#opts.mk42Update.check() : { state: 'disabled', current: 'unknown' }),
       'update.install': async () => (this.#opts.mk42Update ? this.#opts.mk42Update.install() : { started: false, error: 'self-update is not available' }),
       'update.download': async () => {
         const u = this.#opts.mk42Update;
-        if (!u) return { state: 'disabled', current: 'unknown' };
-        return u.download ? u.download() : u.status();
+        if (!u) return this.#withAppRestart({ state: 'disabled', current: 'unknown' });
+        return this.#withAppRestart(u.download ? await u.download() : u.status());
       },
       'update.setAuto': async (p) => {
         const patch: { autoDownload?: boolean; autoInstall?: boolean } = {};
@@ -1061,9 +1543,10 @@ export class DaemonCore {
           d.settings.update = { ...d.settings.update, ...patch };
         });
         const u = this.#opts.mk42Update;
-        if (!u) return { state: 'disabled', current: 'unknown' };
-        return u.settingsChanged ? u.settingsChanged() : u.status();
+        if (!u) return this.#withAppRestart({ state: 'disabled', current: 'unknown' });
+        return this.#withAppRestart(u.settingsChanged ? await u.settingsChanged() : u.status());
       },
+      'app.restartToUpdate': (p) => this.restartToUpdate(asObject(p) as AppRestartToUpdateParams),
       'folders.add': async (p) => this.#registerFolder(await this.#checkDir(reqString(p.path, 'path')), p.label),
       'folders.clone': async (p) => {
         const parsed = parseCloneUrl(reqString(p.url, 'url'));

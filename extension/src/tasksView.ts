@@ -9,11 +9,14 @@ import * as vscode from 'vscode';
 import type { AgentKind, BackgroundAgent, BackgroundRun, BackgroundTaskStatus, BackgroundWorkflow, SessionTasks } from '@mark42/protocol';
 import type { DaemonClient } from './daemonClient.ts';
 import {
+  cliBadges,
+  cliBlocks,
   currentPhaseIndex,
   elapsedMs,
   formatDuration,
   formatTokens,
   modelText,
+  plainRuns,
   progressRatio,
   runningRuns,
   sortAgents,
@@ -155,7 +158,7 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     }
     if (!this.#loaded) this.#render();
     try {
-      const list = await api.request('tasks.list', { sessionId, agent });
+      const list = await api.request('tasks.list', { sessionId, agent, include: ['cliRuns'] });
       if (this.#disposed) return;
       if (this.#sessionId() !== sessionId) {
         this.#again = true; // 읽는 사이 세션이 바뀌었어요 — 옛 답은 버리고 새 세션으로 다시
@@ -203,17 +206,19 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
     if (!this.#loaded || this.#for !== sessionId) return { message: vscode.l10n.t('Loading…') };
     const t = this.#current();
     if (pane === 'runs') {
-      const runs = t?.runs ?? [];
+      // 에이전트 CLI(claude·codex·grok·agy)를 띄운 명령은 «작업»의 블록으로 가요
+      const runs = plainRuns(t);
       if (runs.length === 0) {
+        const hint = cliBlocks(t).length > 0 ? `\n${vscode.l10n.t('Agent CLI calls (claude, codex, grok, agy) are listed under Tasks.')}` : '';
         return {
-          message: `${vscode.l10n.t('No terminal commands in this session yet.')}\n${vscode.l10n.t('Commands Claude runs in the terminal appear here with their description and run time.')}`,
+          message: `${vscode.l10n.t('No terminal commands in this session yet.')}\n${vscode.l10n.t('Commands Claude runs in the terminal appear here with their description and run time.')}${hint}`,
         };
       }
       return { runs, now: this.#now() };
     }
-    if (!t || (t.workflows.length === 0 && t.subagents.length === 0)) {
+    if (!t || (t.workflows.length === 0 && t.subagents.length === 0 && cliBlocks(t).length === 0)) {
       return {
-        message: `${vscode.l10n.t('This session has no background tasks.')}\n${vscode.l10n.t('Workflows and subagents appear here when you run them.')}`,
+        message: `${vscode.l10n.t('This session has no background tasks.')}\n${vscode.l10n.t('Workflows, subagents and agent CLI calls (claude, codex, grok, agy) appear here when you run them.')}`,
       };
     }
     return { tasks: t, now: this.#now() };
@@ -381,8 +386,15 @@ ul.agents { list-style: none; margin: 2px 0 0; padding: 0; }
 .l2, .act { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act { font-family: var(--vscode-editor-font-family, monospace); opacity: .85; }
 .mdl { color: var(--vscode-descriptionForeground); }
+.cli { font-size: 10px; line-height: 14px; padding: 0 4px; border-radius: 3px; border: 1px solid currentColor; white-space: nowrap; flex: none; }
+.cli-claude { color: var(--vscode-charts-orange, #d18616); }
+.cli-codex { color: var(--vscode-charts-green, #388a34); }
+.cli-grok { color: var(--vscode-charts-purple, #8250df); }
+.cli-agy { color: var(--vscode-charts-blue, #1a85ff); }
+.badges { display: inline-flex; gap: 3px; flex: none; }
+.org { color: var(--vscode-descriptionForeground); }
 .el { font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
-.runs .st-running .el { color: var(--vscode-foreground); }
+.runs .st-running .el, .clis .st-running .el { color: var(--vscode-foreground); }
 .ic { width: 14px; flex: none; text-align: center; display: inline-block; }
 .ic::before { display: inline-block; }
 .st-running > .ic::before, .st-running > .head > .ic::before { content: '\\25D0'; color: var(--vscode-progressBar-background); animation: spin 1.2s linear infinite; }
@@ -567,6 +579,8 @@ export function renderTasksHtml(model: TasksViewModel, nonce = randomBytes(16).t
 
 function renderTasks(t: SessionTasks, now: number): string {
   const out: string[] = [];
+  // 세션에 실행 중인 게 하나라도 있으면 끝난 목록은 접어 둬요(아래쪽 실행 중 줄이 끝난 목록 밑으로 밀리지 않게, 높이 맞춤도)
+  const anyRunning = t.workflows.some((w) => statusOf(w.status) === 'running') || t.subagents.some((a) => statusOf(a.status) === 'running') || cliBlocks(t).some((r) => statusOf(r.status) === 'running');
   // 실행 중인 워크플로우가 먼저(같으면 데몬이 준 순서)
   const wfs = t.workflows
     .map((w, i) => ({ w, i }))
@@ -581,12 +595,54 @@ function renderTasks(t: SessionTasks, now: number): string {
     if (running.length) html += `<ul class="agents">${running.map((a) => renderAgent(a, now)).join('')}</ul>`;
     if (ended.length) {
       html +=
-        `<details data-key="ended"${running.length ? '' : ' open'}><summary>${esc(l10nT('{0} ended', ended.length))}</summary>` +
+        `<details data-key="ended"${anyRunning ? '' : ' open'}><summary>${esc(l10nT('{0} ended', ended.length))}</summary>` +
         `<ul class="agents">${ended.map((a) => renderAgent(a, now)).join('')}</ul></details>`;
     }
     out.push(`${html}</section>`);
   }
+  const blocks = cliBlocks(t);
+  if (blocks.length) {
+    // 명령 하나 = 블록 하나, 호출한 CLI마다 뱃지 — 실행 중 먼저(데몬이 준 순서), 끝난 건 접어요
+    const running = blocks.filter((r) => statusOf(r.status) === 'running');
+    const ended = blocks.filter((r) => statusOf(r.status) !== 'running');
+    let html = `<section class="clis"><h2>${esc(l10nT('Agent CLIs {0}', blocks.length))}</h2>`;
+    if (running.length) html += `<ul class="agents">${running.map((r) => renderCliBlock(r, now)).join('')}</ul>`;
+    if (ended.length) {
+      html +=
+        `<details data-key="cli-ended"${anyRunning ? '' : ' open'}><summary>${esc(l10nT('{0} ended', ended.length))}</summary>` +
+        `<ul class="agents">${ended.map((r) => renderCliBlock(r, now)).join('')}</ul></details>`;
+    }
+    out.push(`${html}</section>`);
+  }
   return out.join('');
+}
+
+/** 에이전트 CLI 블록 한 줄: 설명 + CLI 뱃지 + 걸린 시간 / 모델·effort · 띄운 agent · 백그라운드 · 상태 */
+function renderCliBlock(r: BackgroundRun, now: number): string {
+  const st = statusOf(r.status);
+  const elapsed = st === 'stale' && !r.endedAt ? '' : formatDuration(elapsedMs(r, now), l10nT);
+  const label = statusLabel(st, l10nT);
+  const badges = cliBadges(r.calls)
+    .map((b) => {
+      const text = b.count > 1 ? `${b.cli} ×${b.count}` : b.cli;
+      const title = [l10nT('Run by this session with the {0} CLI', b.cli), ...b.details].join('\n');
+      return `<span class="cli cli-${esc(b.cli)}" title="${esc(title)}">${esc(text)}</span>`;
+    })
+    .join('');
+  const models = [...new Set(cliBadges(r.calls).flatMap((b) => b.details))];
+  const l2 = [
+    models.length ? `<span class="mdl">${esc(models.join(', '))}</span>` : undefined,
+    r.origin ? `<span class="org" title="${esc(l10nT('Started by {0}', r.origin.label ?? r.origin.agentId))}">\u2190 ${esc(r.origin.label ?? r.origin.agentId)}</span>` : undefined,
+    r.background ? esc(l10nT('background')) : undefined,
+    st !== 'running' ? `<span class="stl">${esc(label)}</span>` : undefined,
+  ].filter(Boolean);
+  return (
+    `<li class="ag st-${st}">` +
+    `<span class="ic" title="${esc(label)}"></span><div class="main">` +
+    `<div class="l1"><span class="label" title="${esc(r.label)}">${esc(r.label || r.tool)}</span><span class="badges">${badges}</span>${elapsed ? `<span class="el">${esc(elapsed)}</span>` : ''}</div>` +
+    (l2.length ? `<div class="l2">${l2.join(' · ')}</div>` : '') +
+    `</div></li>`
+  );
 }
 
 function renderWorkflow(wf: BackgroundWorkflow, now: number): string {

@@ -42,7 +42,7 @@ export function createTaskMonitor(opts: TaskMonitorOptions = {}): TaskMonitor {
       collectors
         .filter((x) => !p.agent || x.agent === p.agent)
         .map((x) =>
-          x.c.collect({ sessionId: p.sessionId, sinceMs }).catch((e) => {
+          x.c.collect({ sessionId: p.sessionId, sinceMs, cliRuns: p.include?.includes('cliRuns') === true }).catch((e) => {
             opts.log?.(`${x.agent} tasks collect failed: ${e instanceof Error ? e.message : String(e)}`);
             return [] as SessionTasks[];
           }),

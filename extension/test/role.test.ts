@@ -71,6 +71,7 @@ test('agent window info carries slot, folder, session', () => {
     slotId: 's1',
     sessionId: 'sess-1',
     workspaceFile: env.workspaceFile,
+    capabilities: ['app.quitForUpdate'],
   });
 });
 

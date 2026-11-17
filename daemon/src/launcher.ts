@@ -1,8 +1,8 @@
 // 앱 실행기 — 설치본 고르기, 역할 워크스페이스로 앱 창 띄우기. 포커스 = 같은 워크스페이스를 다시 실행.
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fsp } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { promises as fsp, readdirSync } from 'node:fs';
+import { dirname, join, resolve, win32 } from 'node:path';
 import type { WindowRole } from '@mark42/protocol';
 import { pathKey, samePath } from '@mark42/protocol/paths';
 import type { AppInstall, AppProduct, DaemonSettings } from './registry.ts';
@@ -10,6 +10,7 @@ import type { DownloadProgressFn } from './gallery.ts';
 import { PUBLIC_DEFAULTS, type LaunchOverlay } from './edition.ts';
 import { errMsg, type Logger } from './log.ts';
 import {
+  compareVersions,
   ExtensionInstaller,
   hasExtensionVersion,
   KOREAN_LANGUAGE_PACK_ID,
@@ -25,6 +26,7 @@ import { ensureLanguagePacksJson } from './languagePacks.ts';
 import { osUiLanguage, type UiLanguage } from './i18n.ts';
 import type { LaunchProgressLike, LaunchStepEnd, LaunchTicket } from './launchProgress.ts';
 import { applyManagedUserSettings, userDefaultUserDataDir } from './userData.ts';
+import { defaultProcessIdLister, type ProcessIdLister } from './processes.ts';
 
 /** 확장 ID — ~/.vscode/extensions 폴더 이름(anthropic.claude-code-2.1.301-win32-x64, openai.chatgpt-26.1007.21434-win32-x64)으로 확인 */
 export const CLAUDE_EXTENSION_ID = 'anthropic.claude-code';
@@ -154,6 +156,65 @@ export function selectInstall(
   return installs.find((i) => i.source === 'registry') ?? installs[0];
 }
 
+/**
+ * 교훈 012: VS Code main의 단일 인스턴스 파이프는 `\\.\pipe\<scope>-<판>-main-sock`이고 scope = sha256(path.resolve(--user-data-dir))
+ * 앞 8자예요(ipc.net.ts createStaticIPCHandle, environmentMainService.ts mainIPCHandle, userDataPath.ts — 대소문자 그대로). 판이 이름에 들어가서
+ * 다른 판 Mk42.exe는 떠 있는 main을 못 찾고 같은 프로필에 두 번째 main이 돼요(그 main의 웹뷰가 모두 «Could not register service worker»).
+ * 데몬이 실제로 넘기는 `--user-data-dir` 글자 그대로 재요(상대 경로는 데몬 작업 폴더 기준 — 띄운 앱도 같은 작업 폴더를 물려받아요).
+ */
+export function mainPipeScope(userDataDir: string): string {
+  return createHash('sha256').update(win32.resolve(userDataDir)).digest('hex').slice(0, 8);
+}
+
+/** 그 user-data의 그 판 main 파이프 이름(`\\.\pipe\` 아래 이름만) */
+export function mainPipeName(userDataDir: string, version: string): string {
+  return `${mainPipeScope(userDataDir)}-${version}-main-sock`;
+}
+
+/** 파이프 이름 목록(`\\.\pipe\` 아래) — 시험에서 바꿔 끼워요. 목록을 못 읽었으면 undefined(«없음»과 달라요 — C13) */
+export type PipeLister = () => readonly string[] | undefined;
+
+/**
+ * 기본 파이프 목록: Windows는 `\\.\pipe\` 디렉터리 읽기만 해요. existsSync·stat·net.connect는 그 파이프에 연결하는 것과 같아서
+ * main에 빈 연결이 생겨요 — 쓰지 않아요. Windows 밖은 빈 목록(지금 동작 그대로): 소켓 파일 이름이 판의 앞 4자만 써서
+ * (`1.14`) 1.143과 1.146을 가를 수 없고, Mk42는 Windows만 배포해요. 읽기 오류(EMFILE 등)는 undefined — 떠 있는 main이 없다고 보면
+ * 다시 시작이 옛 main이 아직 떠 있는데 새 판을 띄울 수 있어요.
+ */
+export const defaultPipeLister: PipeLister = () => {
+  if (process.platform !== 'win32') return [];
+  try {
+    return readdirSync('\\\\.\\pipe\\');
+  } catch {
+    return undefined;
+  }
+};
+
+/** 파이프 목록을 못 읽었어요 — 떠 있는 main을 몰라요(mark42AppState가 던져요. 새 창 띄우기는 지금처럼 기본 선택으로 물러나요) */
+export class PipeListError extends Error {
+  constructor() {
+    super('could not list the named pipes (running Mk42 mains unknown)');
+    this.name = 'PipeListError';
+  }
+}
+
+/** pid가 살아 있는지 — 신호 0은 확인만 해요(EPERM = 있지만 권한 없음) */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Mk42 앱 판 상태 — 새 창이 쓸 가장 새 판과, 그 프로필에 main이 떠 있는 설치된 판들 */
+export interface Mark42AppState {
+  /** 아무 main도 떠 있지 않을 때 새 창이 쓸 판(settings.apps 가장 새 판) */
+  newest: string;
+  /** newest와 같은 user-data에 main 파이프가 떠 있는 설치된 Mk42 판(높은 판 먼저) */
+  live: string[];
+}
+
 export interface LaunchArgsInput {
   workspaceFile: string;
   userDataDir?: string;
@@ -205,6 +266,16 @@ export interface LaunchOutcome {
 
 export interface AppLauncherLike {
   launch(req: LaunchRequest): Promise<LaunchOutcome>;
+  /**
+   * Mk42 앱 판 상태(«다시 시작해서 적용», app.restartToUpdate). Mk42 설치본이 없거나 user-data를 모르면 undefined.
+   * 파이프 목록을 못 읽으면 던져요({@link PipeListError} — 떠 있는 main을 모름, «없음»이 아니에요)
+   */
+  mark42AppState?(): Promise<Mark42AppState | undefined>;
+  /**
+   * 그 판 Mk42 설치 폴더 안 실행 파일로 도는 프로세스 pid(main·렌더러·확장 호스트 등) — 옛 main이 파이프를 놓은 뒤에도 프로필을 쥔 채 끝나는 중인지(C8).
+   * 그 판 설치본이 없으면 [], 목록을 못 읽으면 던져요. among(앞서 기록한 pid)을 주면 그중 살아 있는 것이 없을 때 목록 없이 빨리 답할 수 있어요
+   */
+  mark42AppProcesses?(version: string, among?: readonly number[]): Promise<number[]>;
 }
 
 /**
@@ -297,6 +368,12 @@ export interface AppLauncherOptions {
   uiLanguage?: () => Promise<UiLanguage>;
   /** Mk42.exe의 argv.json(기본 `<사용자 홈>\.mk42\argv.json`) — 시험에서 바꿔요 */
   argvJsonPath?: string;
+  /** `\\.\pipe\` 이름 목록(기본 {@link defaultPipeLister}) — 떠 있는 Mk42 main 판 찾기(교훈 012) */
+  listPipes?: PipeLister;
+  /** 폴더 안 실행 파일로 도는 프로세스 pid(기본 {@link defaultProcessIdLister} — PowerShell) — 옛 판 main이 정말 끝났는지(C8) */
+  listProcesses?: ProcessIdLister;
+  /** 그 pid가 살아 있는지(기본 process.kill(pid, 0)) — 시험에서 바꿔요 */
+  pidAlive?: (pid: number) => boolean;
   env?: NodeJS.ProcessEnv;
   log?: Logger;
 }
@@ -355,7 +432,10 @@ export class AppLauncher implements AppLauncherLike {
   async mark42ExtensionTarget(): Promise<(EnsureRequest & { appVersion: string }) | undefined> {
     const settings = this.#opts.getSettings();
     if (settings.installExtensions === false) return undefined;
-    const install = selectInstall((await this.installs()).filter((i) => i.product === 'mark42'));
+    const mark42 = (await this.installs()).filter((i) => i.product === 'mark42');
+    const newest = selectInstall(mark42);
+    // 같은 프로필에 옛 판 main이 떠 있으면 그 판의 CLI로 — 새 창과 같은 판을 골라요(교훈 012)
+    const install = newest ? ((await this.#liveMainPick(mark42, newest, settings)) ?? newest) : undefined;
     if (!install) return undefined;
     const { userDataDir, extensionsDir } = await this.#dataDirs(install, settings, false);
     if (!userDataDir || !extensionsDir) return undefined;
@@ -368,6 +448,69 @@ export class AppLauncher implements AppLauncherLike {
       agentPluginsDir: separation?.agentPluginsDir,
       appVersion: install.version,
     };
+  }
+
+  /**
+   * 그 Mk42 설치본(보통 가장 새 판)과 같은 user-data에 main이 떠 있는 설치된 판들(높은 판 먼저). 설치본마다 자기 `--user-data-dir` 글자로
+   * 파이프 이름을 재요 — 같은 폴더라도 글자(대소문자)가 다르면 VS Code도 다른 main으로 보니까요. user-data를 모르면(앱 기본 폴더) undefined,
+   * 파이프 목록을 못 읽으면 {@link PipeListError}.
+   */
+  async #liveMains(installs: DiscoveredInstall[], base: DiscoveredInstall, settings: DaemonSettings): Promise<DiscoveredInstall[] | undefined> {
+    const baseDir = (await this.#dataDirs(base, settings, false)).userDataDir;
+    if (!baseDir) return undefined;
+    const listed = (this.#opts.listPipes ?? defaultPipeLister)();
+    if (!listed) throw new PipeListError();
+    const pipes = new Set(listed.map((n) => n.toLowerCase()));
+    if (pipes.size === 0) return [];
+    const out: DiscoveredInstall[] = [];
+    for (const i of installs) {
+      const dir = i === base ? baseDir : (await this.#dataDirs(i, settings, false)).userDataDir;
+      if (!dir || !samePath(win32.resolve(dir), win32.resolve(baseDir))) continue;
+      // 파이프 이름은 sha256 hex(소문자)·판·고정 꼬리라 대소문자를 가리지 않고 비교해도 돼요(Windows 파이프 이름도 그래요)
+      if (pipes.has(mainPipeName(dir, i.version).toLowerCase()) && !out.some((o) => o.version === i.version)) out.push(i);
+    }
+    return out.sort((a, b) => compareVersions(b.version, a.version));
+  }
+
+  /** 기본 선택(base)과 같은 프로필에 떠 있는 main 중 가장 높은 판의 설치본. base 판이 떠 있거나 아무것도 없으면 undefined(base 그대로) */
+  async #liveMainPick(installs: DiscoveredInstall[], base: DiscoveredInstall, settings: DaemonSettings): Promise<DiscoveredInstall | undefined> {
+    const live = await this.#liveMains(installs, base, settings).catch((e) => {
+      this.#opts.log?.warn(`live main check failed: ${errMsg(e)}`);
+      return undefined;
+    });
+    if (!live || live.length === 0 || live.some((i) => i.version === base.version)) return undefined;
+    const pick = live[0]!;
+    this.#opts.log?.info(`Mk42 ${pick.version} main is running on this profile; opening the window there instead of ${base.version} (restart to apply)`);
+    return pick;
+  }
+
+  /** {@link AppLauncherLike.mark42AppState} */
+  async mark42AppState(): Promise<Mark42AppState | undefined> {
+    const settings = this.#opts.getSettings();
+    const mark42 = (await this.installs()).filter((i) => i.product === 'mark42');
+    const newest = selectInstall(mark42, this.#opts.overlay?.preferredVersion?.('mark42', settings));
+    if (!newest) return undefined;
+    const live = await this.#liveMains(mark42, newest, settings);
+    if (!live) return undefined;
+    return { newest: newest.version, live: live.map((i) => i.version) };
+  }
+
+  /**
+   * {@link AppLauncherLike.mark42AppProcesses} — 그 판 Mk42 설치본(들)의 exe 폴더마다. among을 주면 그중 살아 있는 pid가 없을 때 목록(PowerShell, 몇 초)
+   * 없이 바로 []예요 — 살아 있는 pid가 있으면 목록으로 확인해요(끝난 pid를 다른 프로세스가 다시 받았을 수 있어요).
+   */
+  async mark42AppProcesses(version: string, among?: readonly number[]): Promise<number[]> {
+    if (among && !among.some((pid) => (this.#opts.pidAlive ?? pidAlive)(pid))) return [];
+    const dirs = new Map<string, string>();
+    for (const i of await this.installs()) {
+      if (i.product !== 'mark42' || i.version !== version) continue;
+      const dir = dirname(win32.resolve(i.exe));
+      dirs.set(pathKey(dir), dir);
+    }
+    const list = this.#opts.listProcesses ?? defaultProcessIdLister;
+    const out = new Set<number>();
+    for (const dir of dirs.values()) for (const pid of await list(dir)) if (pid !== process.pid) out.add(pid);
+    return [...out];
   }
 
   /** {@link ExtensionSetup.updateExtension} — 설치기가 지원하지 않으면 실패로 돌려줘요 */
@@ -431,9 +574,13 @@ export class AppLauncher implements AppLauncherLike {
     const product = req.appProduct ?? settings.defaultAppProduct ?? this.#opts.defaultAppProduct ?? PUBLIC_DEFAULTS.defaultAppProduct;
     // 같은 버전 번호여도 다른 앱(제품)이면 다른 앱이에요 — 고른 앱의 설치본 중에서만 골라요(기록에 product가 없으면 'vscode')
     const installs = (await this.installs()).filter((i) => (i.product ?? 'vscode') === product);
-    const install = req.exactVersion
+    let install = req.exactVersion
       ? installs.find((i) => i.version === req.appVersion)
       : selectInstall(installs, req.appVersion ?? this.#opts.overlay?.preferredVersion?.(product, settings));
+    // 판을 정하지 않은 Mk42 창(새 창·재개·통합 창·편집 창 넘기기): 같은 프로필에 옛 판 main이 떠 있으면 그 판으로 — 다른 판이면 두 번째 main이 돼요(교훈 012)
+    if (install && product === 'mark42' && !req.appVersion && !req.exactVersion) {
+      install = (await this.#liveMainPick(installs, install, settings)) ?? install;
+    }
     if (!install) {
       throw new LaunchError(
         req.exactVersion

@@ -122,8 +122,9 @@ export function byRunningThenRecent<T extends { status: BackgroundTaskStatus; up
 
 /** 세션 정렬: 실행 중인 agent가 있는 세션이 먼저, 그다음 최근 순 */
 export function compareSessions(a: SessionTasks, b: SessionTasks): number {
-  const ra = a.running > 0 ? 0 : 1;
-  const rb = b.running > 0 ? 0 : 1;
+  // 에이전트 CLI 블록이 도는 세션도 실행 중으로(30개 상한 안에 먼저)
+  const ra = a.running + (a.cliRunning ?? 0) > 0 ? 0 : 1;
+  const rb = b.running + (b.cliRunning ?? 0) > 0 ? 0 : 1;
   if (ra !== rb) return ra - rb;
   return a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
 }

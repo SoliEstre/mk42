@@ -109,7 +109,7 @@ test('tasks: both agent views get a provider; agent window sets the agent kind; 
     m.resolveWebviewView(view as never);
     assert.deepEqual(view.webview.options, { enableScripts: true, enableCommandUris: false, localResourceRoots: [] });
     await settle();
-    assert.deepEqual(daemon.calls, [['tasks.list', { sessionId: SID, agent: 'claude' }]], 'constructor + resolve coalesce into one load');
+    assert.deepEqual(daemon.calls, [['tasks.list', { sessionId: SID, agent: 'claude', include: ['cliRuns'] }]], 'constructor + resolve coalesce into one load');
     assert.equal(status.visible, true);
     assert.equal(status.text, '$(sync~spin) 2 · 412k');
     assert.equal(status.command, 'mark42.tasks.claude.focus');
@@ -146,7 +146,7 @@ test('tasks: nothing running hides the status item and badge; empty session and 
     assert.match(view.webview.html, /이 창에 열린 세션이 아직 없어요/);
     session = 'idle';
     await m.reload();
-    assert.deepEqual(daemon.calls.at(-1), ['tasks.list', { sessionId: 'idle', agent: 'codex' }]);
+    assert.deepEqual(daemon.calls.at(-1), ['tasks.list', { sessionId: 'idle', agent: 'codex', include: ['cliRuns'] }]);
     assert.equal(status.visible, false);
     assert.equal(view.badge, undefined);
     assert.equal(view.description, '412k');
@@ -181,7 +181,7 @@ test('tasks: a session change drops the old data; a reply for the old session is
     await slow;
     assert.equal(m.totals.running, 0, 'old reply discarded');
     await settle(1100); // throttled retry for the new session
-    assert.deepEqual(daemon.calls.at(-1), ['tasks.list', { sessionId: 'two', agent: 'claude' }]);
+    assert.deepEqual(daemon.calls.at(-1), ['tasks.list', { sessionId: 'two', agent: 'claude', include: ['cliRuns'] }]);
     assert.equal(m.totals.running, 0);
     assert.equal(m.totals.tokens, 412_345);
   } finally {
@@ -607,6 +607,57 @@ test('runs: a session without commands shows a message; tasks rows show model ·
     assert.match(view.webview.html, /이 세션에서 실행한 터미널 명령이 아직 없어요/);
     assert.equal(view.badge, undefined);
     assert.match(tasks.webview.html, /<span class="mdl" title="claude-opus-5-5 · effort high">Opus 5.5 · high<\/span>/);
+  } finally {
+    m.dispose();
+  }
+});
+
+test('agent CLI blocks: a command that starts claude/codex/grok/agy is one block under Tasks with a badge per CLI, not in Runs; running blocks count', async () => {
+  const at = '2026-10-30T10:05:00Z';
+  const runs = [
+    { id: 'p1', label: 'Build app', tool: 'Bash', background: false, status: 'running' as const, startedAt: at, updatedAt: at },
+    {
+      id: 'c1', label: 'Dispatch lane <B>', tool: 'Bash', background: true, status: 'running' as const, startedAt: at, updatedAt: at,
+      calls: [{ cli: 'codex' as const, model: 'gpt-6-astra', effort: 'xhigh' }],
+    },
+    {
+      id: 'c2', label: 'Three grok probes', tool: 'Bash', background: false, status: 'done' as const, startedAt: '2026-10-30T10:00:00Z', endedAt: '2026-10-30T10:01:00Z', updatedAt: '2026-10-30T10:01:00Z',
+      calls: [{ cli: 'grok' as const, model: 'grok-4.7' }, { cli: 'grok' as const }, { cli: 'grok' as const }, { cli: 'agy' as const, effort: 'high' }],
+      origin: { agentId: 'a9', label: 'lane <W>' },
+    },
+  ];
+  const { m } = monitor({ agent: 'claude', reply: (p) => [{ ...tasksFor(p.sessionId, 0), subagents: [], workflows: [], runs }] });
+  try {
+    const tasks = vs.createWebviewView(TASKS_VIEW_IDS.claude);
+    m.resolveWebviewView(tasks as never);
+    const view = vs.createWebviewView(RUNS_VIEW_IDS.claude!);
+    m.resolveWebviewView(view as never);
+    await settle();
+    const html = tasks.webview.html;
+    assert.match(html, /<section class="clis"><h2>에이전트 CLI 2<\/h2>/, 'a CLI-only session is not "no background tasks"');
+    assert.match(html, /Dispatch lane &lt;B&gt;<\/span><span class="badges"><span class="cli cli-codex" title="이 세션이 codex CLI로 실행했어요\ngpt-6-astra · xhigh">codex<\/span><\/span>/);
+    assert.match(html, /<span class="cli cli-grok"[^>]*>grok ×3<\/span><span class="cli cli-agy"[^>]*>agy<\/span>/, 'same CLI in a row is grouped, the next CLI gets its own badge');
+    assert.match(html, /← lane &lt;W&gt;/, 'started by a subagent');
+    assert.doesNotMatch(html, /Build app/, 'plain commands stay in Runs');
+    assert.deepEqual(tasks.badge, { value: 1, tooltip: '1 실행 중' }, 'running CLI block counts toward Tasks');
+    const runsHtml = view.webview.html;
+    assert.match(runsHtml, /Build app/);
+    assert.doesNotMatch(runsHtml, /Dispatch lane|Three grok/, 'CLI blocks leave Runs');
+    assert.deepEqual(view.badge, { value: 1, tooltip: '1 실행 중' }, 'Runs badge counts plain commands only');
+  } finally {
+    m.dispose();
+  }
+});
+
+test('agent CLI blocks: Runs shows a hint when its only commands moved to Tasks', async () => {
+  const at = '2026-10-30T10:05:00Z';
+  const runs = [{ id: 'c1', label: 'x', tool: 'Bash', background: true, status: 'running' as const, startedAt: at, updatedAt: at, calls: [{ cli: 'claude' as const }] }];
+  const { m } = monitor({ agent: 'claude', reply: (p) => [{ ...tasksFor(p.sessionId, 0), runs }] });
+  try {
+    const view = vs.createWebviewView(RUNS_VIEW_IDS.claude!);
+    m.resolveWebviewView(view as never);
+    await settle();
+    assert.match(view.webview.html, /에이전트 CLI\(claude·codex·grok·agy\)를 띄운 명령은 «작업»에 나와요/);
   } finally {
     m.dispose();
   }

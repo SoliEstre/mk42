@@ -16,6 +16,8 @@ import {
   parseOpenState,
   progressRatio,
   runningTotal,
+  sessionRunning,
+  cliBadges,
   sessionProgress,
   sortByActivity,
   sortSessionTasks,
@@ -326,7 +328,7 @@ test('store: 작업 목록을 처음에 읽고, state.changed tasks와 refreshTa
   store.start();
   await flush(20);
   assert.equal(conn.count('tasks.list'), 1);
-  assert.deepEqual(conn.requests.find((r) => r.method === 'tasks.list')?.params, {});
+  assert.deepEqual(conn.requests.find((r) => r.method === 'tasks.list')?.params, { include: ['cliRuns'] }, 'asks for agent CLI blocks too');
   assert.ok(store.data.loaded.has('tasks'));
   assert.ok(kinds.includes('tasks'));
 
@@ -372,4 +374,30 @@ test('store: 옛 데몬(tasks.list 모름)·실패는 토스트 없이 tasksErro
   assert.equal(store.data.tasksError, undefined);
   assert.deepEqual(store.data.tasks.map((s) => s.sessionId), ['ok']);
   assert.equal(errors.length, 0);
+});
+
+test('에이전트 CLI 블록: 실행 중 수·정렬·진행에 들어가고, 뱃지는 이어진 같은 CLI를 묶어요', () => {
+  const at = '2026-10-30T10:00:00Z';
+  const block = (id: string, status: 'running' | 'done', calls: { cli: 'claude' | 'codex' | 'grok' | 'agy'; model?: string; effort?: string }[]) => ({
+    id, label: id, tool: 'Bash', background: true, status, startedAt: at, updatedAt: at, calls,
+  });
+  const plain = { id: 'p', label: 'p', tool: 'Bash', background: false, status: 'running' as const, startedAt: at, updatedAt: at };
+  const cliOnly: SessionTasks = {
+    agent: 'claude', sessionId: 's1', cwd: 'c:/x', workflows: [], subagents: [], running: 0, tokens: NO_TOKENS, updatedAt: at,
+    runs: [plain, block('c1', 'running', [{ cli: 'codex' }]), block('c2', 'done', [{ cli: 'grok' }])],
+  };
+  assert.equal(sessionRunning(cliOnly), 1, 'running block counts, plain command does not');
+  assert.equal(sessionRunning({ ...cliOnly, cliRunning: 3 }), 3, 'daemon count wins when present');
+  assert.equal(runningTotal([cliOnly, { ...cliOnly, running: 2 }]), 4);
+  assert.deepEqual(sessionProgress(cliOnly), { done: 1, total: 2 });
+  const idle: SessionTasks = { ...cliOnly, sessionId: 's2', runs: [], updatedAt: '2026-10-30T11:00:00Z' };
+  assert.deepEqual(sortSessionTasks([idle, cliOnly]).map((s) => s.sessionId), ['s1', 's2'], 'a session with a running CLI block sorts first');
+  assert.deepEqual(
+    cliBadges([{ cli: 'grok', model: 'grok-4.7' }, { cli: 'grok' }, { cli: 'agy', effort: 'high' }, { cli: 'grok' }]),
+    [
+      { cli: 'grok', count: 2, details: ['grok-4.7'] },
+      { cli: 'agy', count: 1, details: ['high'] },
+      { cli: 'grok', count: 1, details: [] },
+    ],
+  );
 });

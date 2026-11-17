@@ -250,7 +250,8 @@ export class HubStore {
   async #loadTasks(): Promise<void> {
     const g = this.#begin('tasks');
     try {
-      const list = await this.#conn.request('tasks.list', {});
+      // 에이전트 CLI 블록(claude·codex·grok·agy를 띄운 명령)도 — 옛 데몬은 모르는 키를 버려요
+      const list = await this.#conn.request('tasks.list', { include: ['cliRuns'] });
       if (!this.#current('tasks', g)) return;
       this.data.tasks = sortSessionTasks(Array.isArray(list) ? list : []);
       this.data.tasksError = undefined;

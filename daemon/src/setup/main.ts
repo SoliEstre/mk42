@@ -48,6 +48,7 @@ import {
   type UpdateRecord,
 } from './plan.ts';
 import { parseUpdateConfig, UPDATES_DIR, type UpdateConfig } from '../updater.ts';
+import { dirPrefix, processesUnder, type ProgramProcess } from '../processes.ts';
 
 export const INSTALL_RECORD = 'install.json';
 /** 설치가 데몬을 끈 뒤 끝날 때까지 있는 표시 — 끊긴 처음 설치를 다시 돌릴 때 «처음 설치»를 기억해요 */
@@ -685,39 +686,15 @@ async function reportOldVersions(home: string, m: PackageManifest, log: Logger):
 
 // ---- uninstall ----
 
-interface ProgramProcess {
-  ProcessId: number;
-  Name: string;
-  /** 관리자 권한 프로세스는 일반 권한 조회에서 경로가 비어요(null) */
-  ExecutablePath: string | null;
-}
-
 /**
  * home 아래 실행 파일로 도는 프로세스(Mk42 창·통합 창·데몬 node 등). 경로를 못 읽는(관리자 권한으로 뜬) Mk42.exe·mk42-hub.exe도
- * 넣어요 — 모르면 «사용 중»으로 봐요(창이 뜬 채로 지우지 않게). 경로는 환경 변수로 넘겨요(따옴표·주입 걱정 없게).
+ * 넣어요 — 모르면 «사용 중»으로 봐요(창이 뜬 채로 지우지 않게). 조회는 processes.ts(«다시 시작해서 적용»과 같이 써요).
  */
 async function programProcesses(home: string): Promise<ProgramProcess[]> {
-  if (process.platform !== 'win32') return [];
-  const r = await run(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $p=$env:MK42_PREFIX; ' +
-        'Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($p, [StringComparison]::OrdinalIgnoreCase)) -or ' +
-        "((-not $_.ExecutablePath) -and ($_.Name -ieq 'Mk42.exe' -or $_.Name -ieq 'mk42-hub.exe')) } | " +
-        'Select-Object ProcessId,Name,ExecutablePath | ConvertTo-Json -Compress',
-    ],
-    { ...process.env, MK42_PREFIX: `${resolve(home).replace(/[\\/]+$/, '')}\\` },
-  );
-  if (r.code !== 0) throw new Error(`process list failed: ${r.stderr.trim()}`);
-  const raw = r.stdout.trim();
+  const list = await processesUnder(dirPrefix(home), ['Mk42.exe', 'mk42-hub.exe']);
   // 설치 마법사의 제거 프로그램(home\uninstall\unins000.exe — 첫 단계가 둘째 단계를 기다리며 떠 있어요)은 빼요
   const wizard = join(home, WIZARD_UNINSTALL_DIR);
-  return ((raw ? [JSON.parse(raw)].flat() : []) as ProgramProcess[]).filter(
-    (p) => p.ProcessId !== process.pid && !(p.ExecutablePath && isInside(p.ExecutablePath, wizard)),
-  );
+  return list.filter((p) => p.ProcessId !== process.pid && !(p.ExecutablePath && isInside(p.ExecutablePath, wizard)));
 }
 
 /** 이 home이 Mk42 설치 폴더인지 — 설치 기록이 이 home을 가리키거나, 설치 기록 전 판이면 설정·비밀 파일이 있어요 */

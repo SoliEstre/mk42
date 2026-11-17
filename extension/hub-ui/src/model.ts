@@ -1,9 +1,11 @@
 // hub UI 순수 로직 — DOM·전송과 무관해서 node:test로 바로 시험해요.
 import {
   ErrorCode,
+  type AgentCliCall,
   type AgentKind,
   type AgentSettings,
   type BackgroundAgent,
+  type BackgroundRun,
   type BackgroundTaskStatus,
   type BackgroundWorkflow,
   type ClaudeEffort,
@@ -578,23 +580,48 @@ export function taskStatusView(status: BackgroundTaskStatus): TaskStatusView {
   return { icon: v.icon, label: t(v.label), cls: TASK_STATUS[status] ? status : 'stale' };
 }
 
-/** 세션 전체 진행: 워크플로우 진행 합 + 워크플로우 밖 서브에이전트(실행 중이 아니면 끝난 것으로) */
-export function sessionProgress(st: Pick<SessionTasks, 'workflows' | 'subagents'>): Progress {
+/** 세션 전체 진행: 워크플로우 진행 합 + 워크플로우 밖 서브에이전트·에이전트 CLI 블록(실행 중이 아니면 끝난 것으로) */
+export function sessionProgress(st: Pick<SessionTasks, 'workflows' | 'subagents' | 'runs'>): Progress {
   let done = 0;
   let total = 0;
   for (const w of st.workflows) {
     done += Math.max(0, w.progress?.done ?? 0);
     total += Math.max(0, w.progress?.total ?? 0);
   }
-  for (const a of st.subagents) {
+  for (const a of [...st.subagents, ...cliBlocks(st)]) {
     total++;
     if (a.status !== 'running') done++;
   }
   return { done, total };
 }
 
-export function runningTotal(list: readonly Pick<SessionTasks, 'running'>[]): number {
-  return list.reduce((n, s) => n + Math.max(0, s.running || 0), 0);
+/** 에이전트 CLI 블록(claude·codex·grok·agy를 띄운 명령 하나 = 블록 하나) */
+export function cliBlocks(st: Pick<SessionTasks, 'runs'>): BackgroundRun[] {
+  return st.runs?.filter((r) => (r.calls?.length ?? 0) > 0) ?? [];
+}
+
+/** 세션의 실행 중 수: agent + 에이전트 CLI 블록(데몬의 running에는 블록이 없어요) */
+export function sessionRunning(st: Pick<SessionTasks, 'running' | 'cliRunning' | 'runs'>): number {
+  const blocks = st.cliRunning ?? cliBlocks(st).filter((r) => r.status === 'running').length;
+  return Math.max(0, st.running || 0) + Math.max(0, blocks || 0);
+}
+
+export function runningTotal(list: readonly Pick<SessionTasks, 'running' | 'cliRunning' | 'runs'>[]): number {
+  return list.reduce((n, s) => n + sessionRunning(s), 0);
+}
+
+/** 블록의 CLI 뱃지 — 이어진 같은 CLI는 하나로 묶고 수를 붙여요(grok ×3) */
+export function cliBadges(calls: readonly AgentCliCall[] | undefined): { cli: AgentCliCall['cli']; count: number; details: string[] }[] {
+  const out: { cli: AgentCliCall['cli']; count: number; details: string[] }[] = [];
+  for (const c of calls ?? []) {
+    const d = [c.model, c.effort].filter(Boolean).join(' · ');
+    const last = out.at(-1);
+    if (last && last.cli === c.cli) {
+      last.count++;
+      if (d) last.details.push(d);
+    } else out.push({ cli: c.cli, count: 1, details: d ? [d] : [] });
+  }
+  return out;
 }
 
 /** 펼침 기억 열쇠 */
@@ -641,7 +668,7 @@ function byId(a: string, b: string): number {
 export function sortSessionTasks(list: readonly SessionTasks[]): SessionTasks[] {
   return [...list].sort(
     (a, b) =>
-      Number(b.running > 0) - Number(a.running > 0) ||
+      Number(sessionRunning(b) > 0) - Number(sessionRunning(a) > 0) ||
       newestFirst(a.updatedAt, b.updatedAt) ||
       byId(taskSessionKey(a), taskSessionKey(b)),
   );

@@ -1,7 +1,7 @@
 // 역할 판별·WindowInfo 조립 — vscode에 의존하지 않는 로직이에요(역할 워크스페이스 신뢰 판단만 파일 시스템 realpath를 봐요).
 import { realpathSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
-import type { AgentKind, ExtensionVersion, WindowInfo, WindowRole } from '@mark42/protocol';
+import { CAPABILITY_QUIT_FOR_UPDATE, type AgentKind, type ExtensionVersion, type WindowInfo, type WindowRole } from '@mark42/protocol';
 import { defaultMark42Home, pathKey } from '@mark42/protocol/paths';
 import { sourceText, type Translate } from './l10n.ts';
 
@@ -354,8 +354,13 @@ export function buildWindowInfo(cfg: RoleConfig, env: HostEnv, sessionId?: strin
   if (env.workspaceFile) info.workspaceFile = env.workspaceFile;
   if (env.appCommit) info.appCommit = env.appCommit;
   if (env.appName) info.appName = env.appName;
+  // 이 확장이 처리하는 데몬 알림(«다시 시작해서 적용» — mk42Update.ts). 데몬은 옛 확장 창에 끝내기를 맡기지 않아요
+  info.capabilities = [...WINDOW_CAPABILITIES];
   return info;
 }
+
+/** 이 확장이 hello로 알리는 기능(WindowInfo.capabilities) */
+export const WINDOW_CAPABILITIES: readonly string[] = [CAPABILITY_QUIT_FOR_UPDATE];
 
 export function roleLabel(role: WindowRole | undefined, t: Translate = sourceText): string {
   switch (role) {

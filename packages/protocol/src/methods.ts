@@ -136,6 +136,35 @@ export interface RequestMap {
   'update.download': { params: Empty; result: Mk42UpdateStatus };
   /** 자동 받기·자동 설치 설정을 바꿔요(registry.json settings.update). 자동 받기를 켤 때 available이면 바로 받아요 */
   'update.setAuto': { params: Partial<Mk42UpdateAuto>; result: Mk42UpdateStatus };
+  /**
+   * «다시 시작해서 적용»(Mk42UpdateStatus.appRestart) — 사용자가 확인한 뒤에만 불러요. 옛 판 Mk42 창을 기록하고 닫기를 부탁(app.quitForUpdate)한 뒤
+   * 옛 main이 끝나면(파이프가 사라지고, 닫기 부탁 전에 기록한 그 판 설치 폴더의 프로세스도 모두 끝나면) 같은 창을 가장 새 판으로 다시 열어요(에이전트 창은
+   * 같은 슬롯·세션, 프롬프트는 보내지 않아요). 통합 창은 그대로. Mk42가 연 창(hello한 창)만 다시 열어요 — Mk42 밖에서 연 창(파일 > 폴더 열기)은 닫히고 다시
+   * 열리지 않아요. 옛 판마다 app.quitForUpdate를 아는 창(WindowInfo.capabilities)이 하나도 없으면 시작하지 않아요(started false, appRestart.needsReload).
+   * 기다리는 동안 판을 정하지 않은 Mk42 창 띄우기(window.open·editor.route·재개)는 LaunchFailed로 거절돼요.
+   * 바로 답하고 진행은 update.changed(appRestart.restarting·failed)로 알려요
+   */
+  'app.restartToUpdate': { params: AppRestartToUpdateParams; result: AppRestartToUpdateResult };
+}
+
+export interface AppRestartToUpdateParams {
+  /** 사용자가 확인한 판(appRestart.available) — 그사이 가장 새 판이 바뀌었으면 시작하지 않아요 */
+  available?: string;
+}
+export interface AppRestartToUpdateResult {
+  started: boolean;
+  /** 닫고 다시 열 창 수 */
+  windows?: number;
+  /** 시작하지 않은 이유(영어 한 줄) */
+  error?: string;
+}
+
+/** `app.quitForUpdate` — 이 판(appVersion) 창이면 앱을 끝내요(workbench.action.quit). 데몬이 확인을 받은 다시 시작에서만 보내요 */
+export interface AppQuitForUpdateParams {
+  /** 끝낼 옛 앱 판(vscode.version) — 다른 판 창은 무시해요 */
+  appVersion: string;
+  /** 다시 열 새 앱 판 */
+  nextVersion: string;
 }
 
 export interface Mk42UpdateInstallResult {
@@ -153,6 +182,11 @@ export interface TasksListParams {
   sinceMs?: number;
   /** 세션 수 상한(기본 30) */
   limit?: number;
+  /**
+   * 세션 전체 목록(sessionId 없음)에 더 실을 것 — 'cliRuns': 에이전트 CLI 블록(runs 중 calls 있는 것)과 그것만 있는 세션 카드.
+   * 아는 클라이언트(새 통합 창)만 보내요 — 옛 통합 창이 빈 카드를 그리지 않게. 세션 하나 요청은 늘 모든 runs를 실어요
+   */
+  include?: 'cliRuns'[];
 }
 export type RequestMethod = keyof RequestMap;
 export type ParamsOf<M extends RequestMethod> = RequestMap[M]['params'];
@@ -179,6 +213,8 @@ export interface DaemonNotificationMap {
   'extensions.updated': { ids: string[] };
   /** Mk42 자체 업데이트 상태가 바뀌었어요(확인·받기 진행·ready·설치 시작·오류) — 붙은 창 모두 + 통합 창 */
   'update.changed': Mk42UpdateChanged;
+  /** «다시 시작해서 적용»을 확인받았어요 — 옛 판 Mark42 창이 앱을 끝내요(app.restartToUpdate) */
+  'app.quitForUpdate': AppQuitForUpdateParams;
 }
 export type DaemonNotification = keyof DaemonNotificationMap;
 

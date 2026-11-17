@@ -211,7 +211,7 @@ test('agent-claude window: hello, openSession via editor.open(programmatic), rep
   // 작업 보기: 든 세션의 백그라운드 작업을 읽고, state.changed {tasks}면 다시 읽어요(다른 주제는 아니에요)
   const tasksCalls = () => d.requests.filter((r) => r.method === 'tasks.list');
   const first = await until(() => tasksCalls()[0]);
-  assert.deepEqual(first.params, { sessionId: '0b6c4f7e-1111-2222-3333-444455556666', agent: 'claude' });
+  assert.deepEqual(first.params, { sessionId: '0b6c4f7e-1111-2222-3333-444455556666', agent: 'claude', include: ['cliRuns'] });
   assert.ok(vs.state.webviewViewProviders.has('mark42.tasks.claude'));
   assert.ok(vs.state.executed.some((e) => e.id === 'setContext' && e.args[0] === 'mark42.agentKind' && e.args[1] === 'claude'));
   const before = tasksCalls().length;

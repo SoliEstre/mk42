@@ -2,6 +2,7 @@
 import type {
   AgentKind,
   BackgroundAgent,
+  BackgroundRun,
   BackgroundWorkflow,
   ClaudeSettings,
   CodexSettings,
@@ -47,6 +48,9 @@ import {
   type Progress,
   runningTotal,
   sessionProgress,
+  sessionRunning,
+  cliBlocks,
+  cliBadges,
   sortByActivity,
   sortWorkflowAgents,
   taskElapsedMs,
@@ -1506,7 +1510,8 @@ export class HubApp {
 
   #taskSession(st: SessionTasks): HTMLElement {
     const key = taskSessionKey(st);
-    const defaultOpen = st.running > 0;
+    const running = sessionRunning(st);
+    const defaultOpen = running > 0;
     const open = isOpen(this.#taskOpen, key, defaultOpen);
     // 세션 cwd가 등록 폴더의 하위 폴더여도 그 등록 폴더 이름으로 보여요
     const folder = folderForCwd(this.#store.data.folders, st.cwd);
@@ -1530,7 +1535,7 @@ export class HubApp {
       el('span', { cls: 'task-folder', text: folder ? folderLabel(folder) : cwdBasename(st.cwd) }),
       el('span', { cls: ['agent-chip', st.agent], text: AGENT_LABEL[st.agent] }),
       title ? el('span', { cls: 'task-session-title', text: title }) : el('span', { cls: 'task-session-title' }),
-      st.running > 0 ? el('span', { cls: 'badge task-running', text: t('tasks.running', st.running) }) : null,
+      running > 0 ? el('span', { cls: 'badge task-running', text: t('tasks.running', running) }) : null,
       this.#tokens(st.tokens),
       this.#progress(sessionProgress(st), t('tasks.overallProgress')),
     );
@@ -1550,9 +1555,47 @@ export class HubApp {
           ),
         );
       }
-      if (!workflows.length && !subagents.length) body.append(el('p', { cls: 'empty muted small', text: t('tasks.none') }));
+      const blocks = sortByActivity(cliBlocks(st), (r) => r.id);
+      if (blocks.length) {
+        body.append(
+          el(
+            'div',
+            { cls: 'task-group' },
+            el('div', { cls: 'task-group-label muted small', text: t('tasks.cliAgents', blocks.length) }),
+            el('ul', { cls: 'task-agents' }, blocks.map((r) => this.#cliRow(r))),
+          ),
+        );
+      }
+      if (!workflows.length && !subagents.length && !blocks.length) body.append(el('p', { cls: 'empty muted small', text: t('tasks.none') }));
     }
-    return el('section', { cls: ['task-session', !open && 'collapsed', st.running > 0 && 'running'] }, head, body);
+    return el('section', { cls: ['task-session', !open && 'collapsed', running > 0 && 'running'] }, head, body);
+  }
+
+  /** 에이전트 CLI 블록 한 줄 — 명령 하나, 호출한 CLI마다 뱃지(명령 전문은 데몬이 싣지 않아요) */
+  #cliRow(r: BackgroundRun): HTMLElement {
+    const badges = cliBadges(r.calls).map((b) =>
+      el('span', {
+        cls: ['cli-chip', `cli-${b.cli}`],
+        attrs: { title: [t('tasks.cliCall', b.cli), ...b.details].join('\n') },
+        text: b.count > 1 ? `${b.cli} ×${b.count}` : b.cli,
+      }),
+    );
+    const models = [...new Set(cliBadges(r.calls).flatMap((b) => b.details))];
+    const line = el(
+      'div',
+      { cls: 'task-agent-line' },
+      this.#statusIcon(r.status),
+      el('span', { cls: 'task-agent-label', attrs: { title: r.label }, text: r.label || r.tool }),
+      ...badges,
+      models.length ? el('span', { cls: 'chip sub', attrs: { title: t('tasks.model') }, text: models.join(', ') }) : null,
+      r.background ? el('span', { cls: 'chip sub', text: t('tasks.background') }) : null,
+      // 끝 시각을 모르는 stale은 걸린 시간도 몰라요(«0초»로 보이지 않게 — 작업 보기와 같이)
+      el('span', { cls: 'task-agent-meta' }, r.status === 'stale' && !r.endedAt ? null : this.#elapsed(r)),
+    );
+    const origin = r.origin
+      ? el('div', { cls: 'task-activity muted small', text: t('tasks.startedBy', r.origin.label ?? r.origin.agentId) })
+      : null;
+    return el('li', { cls: 'task-agent', attrs: { 'data-status': r.status } }, line, origin);
   }
 
   #taskWorkflow(w: BackgroundWorkflow): HTMLElement {
