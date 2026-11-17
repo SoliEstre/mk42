@@ -481,14 +481,49 @@ let pointerDown = false;
 // 내용 높이를 확장에 알려요 — Mk42가 보기 높이를 내용에 맞춰요(최대 컨테이너의 반, mark42.views.fitHeight)
 let lastHeight = -1;
 let heightQueued = false;
+// 맞출 높이: 실행 중인 것 전부 + 그 아래 끝난 것 1건까지(접힌 «N개 끝남»이면 그 줄까지) — 나머지는 보기 안에서 스크롤.
+// 실행 중·끝난 항목이 하나도 없으면(빈 안내) 내용 전체
+const RUNNING_SEL = 'section.wf.st-running, li.ag.st-running';
+const ENDED_SEL = 'section.wf:not(.st-running), li.ag:not(.st-running), details:not([open]) > summary';
+function fitBottom() {
+  const y = window.scrollY;
+  // 접힌 details 안의 것은 Chromium(::details-content)에서도 사각형이 잡혀요 — 조상 details가 접혀 있으면(그 summary 자신은 빼고) 숨은 것
+  const shown = (el) => {
+    if (!el.getClientRects().length) return false;
+    let node = el;
+    for (let d = el.closest('details'); d; node = d, d = d.parentElement && d.parentElement.closest('details')) {
+      if (!d.open && !(node.tagName === 'SUMMARY' && node.parentElement === d)) return false;
+    }
+    return true;
+  };
+  let runBottom = 0;
+  let any = false;
+  for (const el of document.querySelectorAll(RUNNING_SEL)) {
+    if (!shown(el)) continue;
+    any = true;
+    runBottom = Math.max(runBottom, el.getBoundingClientRect().bottom + y);
+  }
+  let bottom = runBottom;
+  for (const el of document.querySelectorAll(ENDED_SEL)) {
+    if (!shown(el)) continue;
+    any = true;
+    const r = el.getBoundingClientRect();
+    // 실행 중 항목 안·위에 있는 끝난 것(실행 중 워크플로우의 끝난 agent 등)은 이미 들어가 있어요
+    if (r.top + y < runBottom - 1) continue;
+    bottom = Math.max(bottom, r.bottom + y);
+    break;
+  }
+  if (any) return bottom;
+  let all = 0;
+  for (const el of document.body.children) all = Math.max(all, el.getBoundingClientRect().bottom + y);
+  return all;
+}
 function reportHeight() {
   if (heightQueued) return;
   heightQueued = true;
   requestAnimationFrame(() => {
     heightQueued = false;
-    let bottom = 0;
-    for (const el of document.body.children) bottom = Math.max(bottom, el.getBoundingClientRect().bottom + window.scrollY);
-    const px = Math.ceil(bottom + 8);
+    const px = Math.ceil(fitBottom() + 8);
     if (Math.abs(px - lastHeight) < 2) return;
     lastHeight = px;
     vscode.postMessage({ type: 'height', px });

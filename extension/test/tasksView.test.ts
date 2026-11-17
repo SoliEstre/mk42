@@ -248,6 +248,7 @@ test('tasks: hidden views are not rewritten until shown; disconnect and load err
 type Listener = (e: any) => void;
 class FakeEl {
   tagName: string;
+  className = '';
   dataset: Record<string, string> = {};
   children: FakeEl[] = [];
   parentElement: FakeEl | null = null;
@@ -260,8 +261,12 @@ class FakeEl {
   get firstElementChild(): FakeEl | null {
     return this.children[0] ?? null;
   }
-  getBoundingClientRect(): { bottom: number } {
-    return { bottom: 20 * (this.#doc.body.children.indexOf(this) + 1) };
+  /** 문서 순서대로 쌓는 가짜 배치: 잎 20px, 상자는 자식들을 감싸요(접힌 details 안도 크로뮴처럼 사각형이 있어요) */
+  getBoundingClientRect(): { top: number; bottom: number } {
+    return this.#doc.layout().get(this) ?? { top: 0, bottom: 0 };
+  }
+  getClientRects(): unknown[] {
+    return [this.getBoundingClientRect()];
   }
   closest(sel: string): FakeEl | null {
     for (let e: FakeEl | null = this; e; e = e.parentElement) if (e.tagName === sel.toUpperCase()) return e;
@@ -301,6 +306,7 @@ class FakeDoc {
       }
       const el = new FakeEl(this, m[2]!);
       for (const a of m[3]!.matchAll(/([\w-]+)(?:="([^"]*)")?/g)) {
+        if (a[1] === 'class') el.className = a[2] ?? '';
         if (a[1]!.startsWith('data-')) el.dataset[a[1]!.slice(5).replace(/-(\w)/g, (_x, c: string) => c.toUpperCase())] = unescape(a[2] ?? '');
         if (a[1] === 'open') el.open = true;
       }
@@ -313,11 +319,36 @@ class FakeDoc {
     // 크로뮴은 열린 채 만들어진 details에도 toggle을 쏴요 — 옛 스크립트가 이걸 사용자 선택으로 잘못 기억했어요
     for (const el of created) if (el.tagName === 'DETAILS' && el.open) setTimeout(() => this.fire('toggle', { target: el }));
   }
+  layout(): Map<FakeEl, { top: number; bottom: number }> {
+    const out = new Map<FakeEl, { top: number; bottom: number }>();
+    let y = 0;
+    const walk = (e: FakeEl) => {
+      const top = y;
+      if (e.children.length) for (const c of e.children) walk(c);
+      else y += 20;
+      out.set(e, { top, bottom: y });
+    };
+    for (const c of this.body.children) walk(c);
+    return out;
+  }
   querySelectorAll(sel: string): FakeEl[] {
     const all = this.body.all();
     if (sel === 'details[data-key]') return all.filter((e) => e.tagName === 'DETAILS' && e.dataset.key !== undefined);
     if (sel === '[data-focus]') return all.filter((e) => e.dataset.focus !== undefined);
-    throw new Error(`unsupported selector ${sel}`);
+    // 높이 맞춤 선택자: tag.cls.cls[:not(.cls)] 또는 details:not([open]) > summary 를 쉼표로
+    const parts = sel.split(',').map((x) => x.trim());
+    const tests = parts.map((p) => {
+      if (p === 'details:not([open]) > summary')
+        return (e: FakeEl) => e.tagName === 'SUMMARY' && e.parentElement?.tagName === 'DETAILS' && !e.parentElement.open;
+      const m = /^([a-z]+)((?:\.[\w-]+)*)(?::not\(\.([\w-]+)\))?$/.exec(p);
+      if (!m) throw new Error(`unsupported selector ${sel}`);
+      const need = m[2]!.split('.').filter(Boolean);
+      return (e: FakeEl) => {
+        const cls = e.className.split(/\s+/);
+        return e.tagName === m[1]!.toUpperCase() && need.every((c) => cls.includes(c)) && (!m[3] || !cls.includes(m[3]));
+      };
+    });
+    return all.filter((e) => tests.some((t) => t(e)));
   }
   addEventListener(type: string, l: Listener): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), l]);
@@ -486,6 +517,50 @@ test('tasks script: reports its content height after each swap', async () => {
   await settle(20);
   const heights = s.posted.filter((p) => (p as { type?: string }).type === 'height') as { px: number }[];
   assert.ok(heights.length > first && heights.at(-1)!.px > heights[0]!.px, 'taller content, larger height');
+});
+
+test('tasks script: fits running items plus one ended item, not the whole history', async () => {
+  const heightOf = async (html: string) => {
+    const s = runScript(html);
+    await settle(20);
+    const h = s.posted.filter((p) => (p as { type?: string }).type === 'height') as { px: number }[];
+    return { px: h.at(-1)!.px, doc: s.doc };
+  };
+  const run = (i: number, status: 'running' | 'done') => ({
+    id: `t${i}`, label: `c${i}`, tool: 'Bash', background: false, status, startedAt: '2026-10-30T10:00:00Z', endedAt: status === 'done' ? '2026-10-30T10:01:00Z' : undefined, updatedAt: '2026-10-30T10:01:00Z',
+  });
+  const bottomOf = (doc: FakeDoc, pick: (e: FakeEl) => boolean) => doc.body.all().filter(pick).map((e) => e.getBoundingClientRect().bottom);
+  const lis = (doc: FakeDoc, cls: string) => (e: FakeEl) => e.tagName === 'LI' && e.className.split(' ').includes(cls);
+
+  // 실행 중 없음 + 끝난 30개(기본으로 펼침): 끝난 첫 줄까지만
+  const ended30 = await heightOf(renderTasksHtml({ runs: Array.from({ length: 30 }, (_, i) => run(i, 'done')), now: NOW }, 'n'));
+  const firstDone = bottomOf(ended30.doc, lis(ended30.doc, 'st-done'))[0]!;
+  assert.equal(ended30.px, firstDone + 8, 'one ended row');
+  assert.ok(ended30.px < Math.max(...bottomOf(ended30.doc, () => true)) / 5, 'far less than the whole list');
+
+  // 실행 중 2 + 끝난 30(접힘): 실행 중 둘 + «N개 끝남» 줄
+  const mixed = await heightOf(renderTasksHtml({ runs: [run(100, 'running'), run(101, 'running'), ...Array.from({ length: 30 }, (_, i) => run(i, 'done'))], now: NOW }, 'n'));
+  const summary = bottomOf(mixed.doc, (e) => e.tagName === 'SUMMARY')[0]!;
+  assert.equal(mixed.px, summary + 8, 'running rows and the collapsed «ended» line');
+
+  // 작업: 끝난 워크플로우가 실행 중 서브에이전트 위에 있어도 실행 중인 것은 다 들어가고, 그 아래 끝난 것 1건(접힌 줄)
+  const t = tasksFor(SID, 1);
+  t.workflows = [{ ...t.workflows[0]!, status: 'done', agents: t.workflows[0]!.agents.map((a) => ({ ...a, status: 'done' as const })) }];
+  const sub = (id: string, status: 'running' | 'done') => ({ id, label: id, status, startedAt: '2026-10-30T10:00:00Z', updatedAt: '2026-10-30T10:01:00Z' });
+  t.subagents = [sub('r1', 'running'), sub('r2', 'running'), ...Array.from({ length: 10 }, (_, i) => sub(`d${i}`, 'done'))];
+  const tasks = await heightOf(renderTasksHtml({ tasks: t, now: NOW }, 'n'));
+  const running = bottomOf(tasks.doc, lis(tasks.doc, 'st-running'));
+  assert.equal(running.length, 2);
+  const lastRunning = Math.max(...running);
+  const wfTop = tasks.doc.body.all().find((e) => e.tagName === 'SECTION' && e.className.includes('wf'))!.getBoundingClientRect().top;
+  assert.ok(wfTop < lastRunning, 'the ended workflow sits above the running subagents');
+  const below = tasks.doc.body.all().find((e) => e.tagName === 'SUMMARY' && e.getBoundingClientRect().top >= lastRunning)!;
+  assert.equal(tasks.px, below.getBoundingClientRect().bottom + 8, 'all running subagents, then the collapsed «ended» line below them');
+  assert.ok(tasks.px < Math.max(...bottomOf(tasks.doc, () => true)), 'the ended subagents themselves are not counted');
+
+  // 빈 안내(항목 없음)는 내용 전체
+  const empty = await heightOf(renderTasksHtml({ message: 'a' } as never, 'n'));
+  assert.ok(empty.px > 8);
 });
 
 test('runs: the Claude window gets a «실행» view — running commands with description and elapsed time, badge counts running commands, labels escaped', async () => {

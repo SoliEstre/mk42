@@ -25,6 +25,12 @@ internal static class Strings
         "Another account in this session holds the Mk42 Hub name, so the hub window can't be opened.");
     public static string NoDaemon => T("Mk42 데몬(mk42d)에 닿지 못했어요. 데몬이 떠 있는지 확인해 주세요(보통 로그온 때 자동으로 떠요).",
         "Couldn't reach the Mk42 daemon (mk42d). Please check that it is running (it normally starts automatically at sign-in).");
+    public static string DaemonUnresponsive(string home) => T(
+        $"Mk42 데몬(mk42d)이 떠 있지만 답하지 않아요. 잠시 뒤 다시 눌러 보고, 계속되면 데몬 로그({Path.Combine(home, "logs", "mk42d.log")})를 확인해 주세요.",
+        $"The Mk42 daemon (mk42d) is running but not answering. Try again in a moment; if it keeps happening, check the daemon log ({Path.Combine(home, "logs", "mk42d.log")}).");
+    public static string DaemonStartFailed(string home) => T(
+        $"Mk42 데몬(mk42d)이 꺼져 있어서 띄워 봤지만 뜨지 않았어요. 데몬 로그({Path.Combine(home, "logs", "mk42d.log")})를 확인해 주세요.",
+        $"The Mk42 daemon (mk42d) wasn't running and couldn't be started. Please check the daemon log ({Path.Combine(home, "logs", "mk42d.log")}).");
     public static string DaemonRefused => T("데몬이 통합 창을 열지 못했어요. 데몬 로그(<home>\\logs\\mk42d.log)를 확인해 주세요.",
         "The daemon couldn't open the hub window. Please check the daemon log (<home>\\logs\\mk42d.log).");
     public static string WebViewFailed(string message) => T($"통합 창을 띄우지 못했어요(WebView2): {message}",

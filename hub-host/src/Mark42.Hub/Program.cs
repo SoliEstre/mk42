@@ -72,12 +72,26 @@ internal static partial class Program
             MessageBox.Show(error, HubForm.Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 2;
         }
-        var result = HubLauncher.AskOpenHub(HubLauncher.PipeNameFor(home!, Environment.UserName));
+        var pipe = HubLauncher.PipeNameFor(home!, Environment.UserName);
+        // 파이프가 아예 없으면 붙기(3초)를 기다리지 않고 바로 띄우러 가요 — 같은 순간 다른 데몬이 떴으면 새 데몬은 «already running»으로 그쪽에 부탁하고 끝나요
+        var result = DaemonStarter.PipeExists(pipe) ? HubLauncher.AskOpenHub(pipe) : HubLauncher.Result.NoDaemon;
         if (result == HubLauncher.Result.Opened) return 0;
-        MessageBox.Show(result == HubLauncher.Result.NoDaemon
-                ? Strings.NoDaemon
-                : Strings.DaemonRefused,
-            HubForm.Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        string message;
+        if (result == HubLauncher.Result.Refused) message = Strings.DaemonRefused;
+        else
+        {
+            // 데몬이 꺼져 있으면(파이프 없음) 설치 엔진과 같은 명령으로 띄우고 다시 부탁해요 — 재부팅하지 않아도 되게
+            var started = DaemonStarter.StartAndOpenHub(home!, pipe);
+            if (started == DaemonStarter.Outcome.Opened) return 0;
+            message = started switch
+            {
+                DaemonStarter.Outcome.Refused => Strings.DaemonRefused,
+                DaemonStarter.Outcome.Unresponsive => Strings.DaemonUnresponsive(home!),
+                DaemonStarter.Outcome.Failed => Strings.DaemonStartFailed(home!),
+                _ => Strings.NoDaemon,
+            };
+        }
+        MessageBox.Show(message, HubForm.Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
         return 1;
     }
 
