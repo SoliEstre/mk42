@@ -11,7 +11,7 @@ import { codexHome as defaultCodexHome, normalizePath, pathKey } from '@mark42/p
 import { AppServerClient } from './codex-app-server.ts';
 import { findCodexBinary } from './codex-bin.ts';
 import { bootTimeMs } from './boot.ts';
-import { clipTitle, listCodexThreadsFromSqlite, parseSource, recentCodexRollouts } from './codex-sqlite.ts';
+import { clipTitle, filterCodexThreads, parseSource, readCodexThreads, recentCodexRollouts, type CodexThreadEntry } from './codex-sqlite.ts';
 import type { ListOptions, LiveSession, SessionIndexer } from './types.ts';
 import { pollSignature, type Poller } from './watch.ts';
 
@@ -45,6 +45,10 @@ export const CODEX_TUNING = {
   activeWindowMs: 10 * 60_000,
   /** live() 때 rollout을 확인할 최근 스레드 수 */
   activeScanThreads: 40,
+  /** live()의 «최근 rollout» 추정을 이만큼 다시 써요 */
+  liveCacheMs: 2000,
+  /** 스레드 목록 읽기가 이만큼 이어서 실패하면 방금 목록으로 답하기를 그만둬요 */
+  staleListFailures: 3,
 };
 
 const TOP_KINDS = ['cli', 'vscode', 'exec', 'appServer', 'unknown'];
@@ -187,8 +191,51 @@ export function createCodexIndexer(opts: CodexIndexerOptions = {}): SessionIndex
     return out;
   }
 
+  /**
+   * DB가 바뀔 때만 다시 읽어요(서명 = state_5.sqlite·-wal의 크기·시각). 통합 창은 폴더마다 sessions.list를 보내서,
+   * 요청마다 스레드 표 전체를 동기로 읽으면 폴더 수만큼 데몬이 멈췄어요(2,000 스레드 · 폴더 5개 → 약 5초, tasks.list 시간 초과).
+   */
+  let threadCache: { sig: string; all: CodexThreadEntry[] } | undefined;
+  let threadReadFailures = 0;
   async function listViaSqlite(o: ListOptions): Promise<SessionSummary[]> {
-    return listCodexThreadsFromSqlite(dbPath, o);
+    const sg = await sig();
+    if (!threadCache || threadCache.sig !== sg) {
+      try {
+        threadCache = { sig: sg, all: readCodexThreads(dbPath) };
+        threadReadFailures = 0;
+      } catch (e) {
+        // Codex가 쓰는 중이면 잠깐 잠겨 있을 수 있어요 — 방금 읽은 목록이 있으면 그걸로 답해요(서명이 그대로 다르니 다음 요청이 다시 읽어요).
+        // 파일이 없어졌거나 이어서 실패하면 옛 목록을 끝없이 내지 않게 버리고 오류로 올려요(서버가 빈 목록 + 경고로 답해요)
+        threadReadFailures++;
+        if (!threadCache || threadReadFailures >= CODEX_TUNING.staleListFailures || !existsSync(dbPath)) {
+          threadCache = undefined;
+          throw e;
+        }
+        log(`codex: thread list not refreshed, using the last one: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return filterCodexThreads(threadCache.all, o);
+  }
+
+  /**
+   * live()의 «최근 rollout» 추정 — 한 번 새로 고칠 때 폴더마다 다시 묻지 않게 잠깐 들고 있어요. 결과가 아니라 **진행 중인 Promise**를
+   * 들어요: 같은 새로 고침의 요청들은 첫 질의의 stat을 기다리는 사이에 들어와서, 결과가 나온 뒤에 채우면 저마다 질의를 또 돌려요.
+   */
+  let recentLive: { at: number; p: Promise<LiveSession[]> } | undefined;
+  async function scanRecent(t: number): Promise<LiveSession[]> {
+    const boot = bootTime();
+    const recent: LiveSession[] = [];
+    for (const r of recentCodexRollouts(dbPath, CODEX_TUNING.activeScanThreads)) {
+      let mtime: number;
+      try {
+        mtime = (await stat(r.rolloutPath)).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (mtime < boot || t - mtime > CODEX_TUNING.activeWindowMs) continue;
+      recent.push({ agent: 'codex', sessionId: r.id, cwd: r.cwd, status: 'busy', owner: 'unknown (recent rollout write)' });
+    }
+    return recent;
   }
 
   async function sig(): Promise<string> {
@@ -230,18 +277,18 @@ export function createCodexIndexer(opts: CodexIndexerOptions = {}): SessionIndex
       //    턴이 도는 동안 rollout JSONL이 계속 쓰이니, 이번 부팅 뒤 최근에 쓰인 rollout은 «돌고 있을 수 있음»으로 봐요(추정).
       //    대기 중(idle)으로 열려 있기만 한 스레드는 이 방법으로 못 봐요.
       if (existsSync(dbPath)) {
-        const boot = bootTime();
         const t = now();
-        for (const r of recentCodexRollouts(dbPath, CODEX_TUNING.activeScanThreads)) {
-          let mtime: number;
-          try {
-            mtime = (await stat(r.rolloutPath)).mtimeMs;
-          } catch {
-            continue;
-          }
-          if (mtime < boot || t - mtime > CODEX_TUNING.activeWindowMs) continue;
-          out.push({ agent: 'codex', sessionId: r.id, cwd: r.cwd, status: 'busy', owner: 'unknown (recent rollout write)' });
+        let cur = recentLive;
+        if (!cur || t - cur.at > CODEX_TUNING.liveCacheMs || t < cur.at) {
+          // scanRecent는 첫 await 전에 동기 질의를 끝내요 — 뒤따르는 호출은 이 Promise를 기다리고 질의는 한 번
+          const entry = { at: t, p: scanRecent(t) };
+          recentLive = cur = entry;
+          // 실패(잠김)한 Promise를 들고 있지 않아요
+          entry.p.catch(() => {
+            if (recentLive === entry) recentLive = undefined;
+          });
         }
+        out.push(...(await cur.p).map((l) => ({ ...l })));
       }
       // 2) 데몬 app-server에 올라온(loaded) 스레드 (auto·appServer 모드만)
       const c = client;

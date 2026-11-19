@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { BackgroundAgent, BackgroundTaskStatus, SessionTasks } from '@mark42/protocol';
 import { codexHome, normalizePath } from '@mark42/protocol/paths';
-import { parseSource } from '../indexers/codex-sqlite.ts';
+import { CODEX_DB_READ, parseSource } from '../indexers/codex-sqlite.ts';
 import { peekJsonl } from '../indexers/jsonl-peek.ts';
 import type { CollectOptions, TaskCollector } from './claudeTasks.ts';
 import {
@@ -99,7 +99,7 @@ function msOf(r: Row, msCol: string, secCol: string): number | undefined {
 
 /** 부모가 있는(서브에이전트) 스레드와 그 부모를 읽어요. 테이블·열이 없으면 빈 목록 */
 export function readCodexSpawnTree(dbPath: string): { children: ThreadRow[]; parents: Map<string, ThreadRow> } {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = new DatabaseSync(dbPath, CODEX_DB_READ);
   try {
     if (!hasTable(db, 'threads')) return { children: [], parents: new Map() };
     const cols = new Set((db.prepare('PRAGMA table_info(threads)').all() as Row[]).map((c) => String(c.name)));

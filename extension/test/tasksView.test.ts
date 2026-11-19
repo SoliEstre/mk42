@@ -15,7 +15,7 @@ registerHooks({
   },
 });
 const vs = (await import(stubUrl)) as typeof import('./helpers/vscode-stub.ts');
-const { TasksMonitor, TASKS_VIEW_IDS, RUNS_VIEW_IDS, AGENT_KIND_CONTEXT, FIT_HEIGHT_COMMAND, renderTasksHtml, renderTasksBody } =(await import('../src/tasksView.ts')) as typeof import('../src/tasksView.ts');
+const { TasksMonitor, TASKS_VIEW_TUNING, TASKS_VIEW_IDS, RUNS_VIEW_IDS, AGENT_KIND_CONTEXT, FIT_HEIGHT_COMMAND, renderTasksHtml, renderTasksBody } =(await import('../src/tasksView.ts')) as typeof import('../src/tasksView.ts');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {}, show() {} };
 const SID = '0b6c4f7e-1111-2222-3333-444455556666';
@@ -658,6 +658,91 @@ test('agent CLI blocks: Runs shows a hint when its only commands moved to Tasks'
     m.resolveWebviewView(view as never);
     await settle();
     assert.match(view.webview.html, /에이전트 CLI\(claude·codex·grok·agy\)를 띄운 명령은 «작업»에 나와요/);
+  } finally {
+    m.dispose();
+  }
+});
+
+test('tasks: one failed load (the daemon was busy) keeps the list and retries; failing again clears it and says so; then it recovers', async () => {
+  const saved = { ...TASKS_VIEW_TUNING };
+  Object.assign(TASKS_VIEW_TUNING, { retryMs: [30, 30, 30] });
+  let fail = 0;
+  const { m, daemon, status } = monitor({
+    agent: 'claude',
+    reply: (p) => {
+      if (fail > 0) {
+        fail--;
+        throw new Error('timeout: tasks.list');
+      }
+      return [tasksFor(p.sessionId)];
+    },
+  });
+  try {
+    const view = vs.createWebviewView(TASKS_VIEW_IDS.claude);
+    m.resolveWebviewView(view as never);
+    await settle();
+    assert.match(view.webview.html, /lane A/);
+    const calls = daemon.calls.length;
+
+    // 한 번 실패: 목록·배지·상태 표시줄 그대로, 알아서 다시 읽어 성공
+    fail = 1;
+    await m.reload();
+    assert.match(view.webview.html, /lane A/, 'list kept after one failure');
+    assert.doesNotMatch(view.webview.html, /작업 목록을 불러오지 못했어요/);
+    assert.deepEqual(view.badge, { value: 2, tooltip: '2 실행 중' });
+    assert.equal(status.visible, true);
+    await settle(120);
+    assert.equal(daemon.calls.length, calls + 2, 'retried by itself');
+    assert.match(view.webview.html, /lane A/);
+
+    // 이어서 두 번 실패: 비우고 알려요(옛 «실행 중»을 붙들지 않게), 그 뒤 다시 읽어 돌아와요
+    fail = 2;
+    await m.reload();
+    await settle(60);
+    assert.match(view.webview.html, /작업 목록을 불러오지 못했어요/);
+    assert.equal(status.visible, false);
+    assert.equal(view.badge, undefined);
+    await settle(120);
+    assert.match(view.webview.html, /lane A/, 'recovered without a daemon notification');
+    assert.equal(status.visible, true);
+  } finally {
+    Object.assign(TASKS_VIEW_TUNING, saved);
+    m.dispose();
+  }
+});
+
+test('tasks: a request rejected because the connection dropped is not a load failure — after reconnecting it shows loading, then the list', async () => {
+  let pending: { reject: (e: Error) => void } | undefined;
+  let hang = false;
+  const { m, daemon } = monitor({
+    agent: 'claude',
+    reply: (p) => {
+      if (hang) return new Promise((_res, reject) => (pending = { reject }));
+      return [tasksFor(p.sessionId)];
+    },
+  });
+  try {
+    const view = vs.createWebviewView(TASKS_VIEW_IDS.claude);
+    m.resolveWebviewView(view as never);
+    await settle();
+    assert.match(view.webview.html, /lane A/);
+
+    // 데몬이 바빠 답이 안 오는 사이에 연결이 끊겨요(재시작 등) — 실제처럼 끊김 처리 뒤에 대기 요청이 거절돼요
+    hang = true;
+    void m.reload();
+    await settle();
+    assert.ok(pending, 'request in flight');
+    daemon.setState('disconnected');
+    pending!.reject(new Error('connection closed'));
+    await settle();
+    assert.match(view.webview.html, /데몬에 연결되지 않았어요/);
+
+    hang = false;
+    daemon.setState('connected');
+    assert.doesNotMatch(view.webview.html, /작업 목록을 불러오지 못했어요/, 'no error text right after reconnecting');
+    await settle(1200);
+    assert.match(view.webview.html, /lane A/);
+    assert.doesNotMatch(view.webview.html, /작업 목록을 불러오지 못했어요/);
   } finally {
     m.dispose();
   }

@@ -364,6 +364,105 @@ describe('claude tasks — retries, run results, other project dirs, windows, co
     assert.deepEqual(k.phases, [{ title: 'Only', started: 0, done: 0 }]);
   });
 
+  it('a run resumed under the same runId is running again once the journal moves after the earlier result json; abandoned attempts are left out', async () => {
+    const fx = fresh('resumed');
+    const c = createClaudeTaskCollector({ claudeDir: fx.claudeDir });
+    // 앞선 실행: 2분 전에 움직인 파일들, 1분 전에 쓰인 실행 결과(completed). orphan = 프롬프트가 바뀌어 다시 불리지 않을 지난 시도(결과 없음)
+    writeFileSync(join(fx.wfDir, 'agent-orphan.jsonl'), assistant('m_or', U2, [], 120_000));
+    appendFileSync(join(fx.wfDir, 'journal.jsonl'), line({ type: 'started', key: 'k-old-prompt', agentId: 'orphan', label: 'old attempt', phase: 'Review' }));
+    for (const f of ['agent-w1.jsonl', 'agent-w2.jsonl', 'agent-w3.jsonl', 'agent-orphan.jsonl', 'journal.jsonl']) setOld(join(fx.wfDir, f), 120_000);
+    writeFileSync(fx.runJson(RUN), runFile({ runId: RUN, status: 'completed', workflowName: 'from-run', agentCount: 4, phases: [{ title: 'Review' }] }));
+    setOld(fx.runJson(RUN), 60_000);
+    let wf = only(await c.collect({}), SID).workflows[0]!;
+    assert.equal(wf.status, 'done', 'not resumed yet');
+
+    // 같은 runId로 다시 돌림: journal에 같은 key가 새 agent로 다시 시작하고, 그 agent 파일이 지금 쓰여요
+    appendFileSync(join(fx.wfDir, 'journal.jsonl'), line({ type: 'started', key: 'k3', agentId: 'w4', label: 'verify:1', phase: 'Verify' }));
+    writeFileSync(join(fx.wfDir, 'agent-w4.jsonl'), assistant('m_w4', U2, [], 500));
+    let s = only(await c.collect({}), SID);
+    wf = s.workflows[0]!;
+    assert.equal(wf.status, 'running', 'the stale result json no longer ends the run');
+    const st = () => Object.fromEntries(wf.agents.map((a) => [a.id, a.status]));
+    assert.deepEqual(st(), { w4: 'running', w1: 'done', w2: 'failed' }, 'w3 is superseded; the orphan of the earlier attempt is not listed or counted');
+    assert.deepEqual(wf.progress, { done: 2, total: 3 });
+    assert.deepEqual(wf.phases.map((p) => [p.title, p.started, p.done]), [['Review', 2, 2], ['Verify', 1, 0], ['Fix', 0, 0]]);
+    assert.equal(s.running, 2, 'arun + w4');
+
+    // 단계 사이: 시작한 agent가 다 끝났어도 결과 json이 새로 쓰이기 전에는 «끝남»이 아니고, 다음 단계 시작을 서명이 알아채요
+    appendFileSync(join(fx.wfDir, 'journal.jsonl'), line({ type: 'result', key: 'k3', agentId: 'w4' }));
+    wf = only(await c.collect({}), SID).workflows[0]!;
+    assert.equal(wf.status, 'running', 'between phases of a resumed run');
+    const fp = await c.fingerprint();
+    appendFileSync(join(fx.wfDir, 'journal.jsonl'), line({ type: 'started', key: 'k5', agentId: 'w5', label: 'fix:1', phase: 'Fix' }));
+    assert.notEqual(await c.fingerprint(), fp, 'the next phase starting changes the fingerprint');
+
+    // 새 실행이 끝나 결과 json이 다시 쓰이면 끝난 걸로 — 버려진 시도는 끝난 뒤에도 돌아오지 않아요(startTime = 마지막 시도의 시작)
+    writeFileSync(fx.runJson(RUN), runFile({ runId: RUN, status: 'killed', workflowName: 'from-run', agentCount: 4, startTime: Date.now() - 30_000, phases: [{ title: 'Review' }] }));
+    s = only(await c.collect({}), SID);
+    wf = s.workflows[0]!;
+    assert.equal(wf.status, 'failed');
+    assert.deepEqual(st(), { w5: 'failed', w4: 'done', w1: 'done', w2: 'failed' });
+  });
+
+  it('a killed run stays ended when an agent transcript gets a late write after the result json (journal untouched); so does a completed one', async () => {
+    const fx = fresh('latewrite');
+    const c = createClaudeTaskCollector({ claudeDir: fx.claudeDir });
+    // w3: 도구 호출 도중 kill — 첫 기록은 결과 json보다 앞, 끊긴 도구의 결과가 39초 뒤에 붙어요
+    writeFileSync(join(fx.wfDir, 'agent-w3.jsonl'), assistant('m_w3', U2, [{ type: 'tool_use', id: 'tb', name: 'Bash', input: { command: 'sleep 900', description: 'long' } }], 110_000));
+    for (const f of ['agent-w1.jsonl', 'agent-w2.jsonl', 'agent-w3.jsonl', 'journal.jsonl']) setOld(join(fx.wfDir, f), 100_000);
+    writeFileSync(fx.runJson(RUN), runFile({ runId: RUN, status: 'killed', workflowName: 'from-run', agentCount: 3, startTime: Date.now() - 130_000, phases: [{ title: 'Review' }] }));
+    setOld(fx.runJson(RUN), 60_000);
+    appendFileSync(join(fx.wfDir, 'agent-w3.jsonl'), line({ type: 'user', timestamp: iso(21_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tb', content: 'interrupted', is_error: true }] } }));
+    setOld(join(fx.wfDir, 'agent-w3.jsonl'), 21_000);
+    let s = only(await c.collect({}), SID);
+    let wf = s.workflows[0]!;
+    assert.equal(wf.status, 'failed', 'a late transcript write is not a resume');
+    assert.equal(wf.agents.find((a) => a.id === 'w3')!.status, 'failed');
+    assert.equal(s.running, 1, 'only arun');
+    assert.deepEqual(wf.progress, { done: 3, total: 3 });
+
+    // 그 뒤 프롬프트를 바꿔(다른 key) 같은 runId로 다시 돌려도, 늦게 쓰인 지난 시도의 agent는 지금 시도 것으로 세지 않아요
+    appendFileSync(join(fx.wfDir, 'journal.jsonl'), line({ type: 'started', key: 'k-new', agentId: 'w9', label: 'verify:new', phase: 'Verify' }));
+    writeFileSync(join(fx.wfDir, 'agent-w9.jsonl'), assistant('m_w9', U2, [], 300));
+    s = only(await c.collect({}), SID);
+    wf = s.workflows[0]!;
+    assert.equal(wf.status, 'running');
+    assert.deepEqual(Object.fromEntries(wf.agents.map((a) => [a.id, a.status])), { w9: 'running', w1: 'done', w2: 'failed' }, 'w3 (started before the earlier result, no journal outcome) is left out');
+    assert.equal(s.running, 2, 'arun + w9, not w3');
+  });
+
+  it('a resumed run without a script copy keeps the name and phase titles of the earlier result json; a first run between phases stays in the fingerprint', async () => {
+    const fx = fresh('noscript');
+    const c = createClaudeTaskCollector({ claudeDir: fx.claudeDir });
+    const run = 'wf_noscript-009';
+    const dir = join(fx.sub, 'workflows', run);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'journal.jsonl'), line({ type: 'started', key: 'a', agentId: 'n1', phase: 'Review' }) + line({ type: 'result', key: 'a', agentId: 'n1' }));
+    writeFileSync(join(dir, 'agent-n1.jsonl'), assistant('m_n1', U2, [], 120_000));
+    for (const f of ['agent-n1.jsonl', 'journal.jsonl']) setOld(join(dir, f), 120_000);
+    writeFileSync(fx.runJson(run), runFile({ runId: run, status: 'failed', workflowName: 'my-review', agentCount: 1, phases: [{ title: 'Review' }, { title: 'Verify' }, { title: 'Report' }] }));
+    setOld(fx.runJson(run), 60_000);
+    const find = async () => only(await c.collect({}), SID).workflows.find((w) => w.runId === run)!;
+    assert.equal((await find()).status, 'failed');
+    appendFileSync(join(dir, 'journal.jsonl'), line({ type: 'started', key: 'b', agentId: 'n2', phase: 'Verify' }));
+    writeFileSync(join(dir, 'agent-n2.jsonl'), assistant('m_n2', U2, [], 200));
+    const wf = await find();
+    assert.equal(wf.status, 'running');
+    assert.equal(wf.name, 'my-review', 'name survives the resume');
+    assert.deepEqual(wf.phases.map((p) => p.title), ['Review', 'Verify', 'Report']);
+
+    // 결과 json이 아직 없는 첫 실행: 시작한 agent가 다 끝난 단계 사이에도 서명에 남아 다음 단계 시작을 알아채요
+    const first = 'wf_first-010';
+    const fdir = join(fx.sub, 'workflows', first);
+    mkdirSync(fdir, { recursive: true });
+    writeFileSync(join(fdir, 'journal.jsonl'), line({ type: 'started', key: 'a', agentId: 'f1' }) + line({ type: 'result', key: 'a', agentId: 'f1' }));
+    writeFileSync(join(fdir, 'agent-f1.jsonl'), assistant('m_f1', U2, [], 400));
+    await c.collect({});
+    const fp = await c.fingerprint();
+    appendFileSync(join(fdir, 'journal.jsonl'), line({ type: 'started', key: 'b', agentId: 'f2' }));
+    assert.notEqual(await c.fingerprint(), fp);
+  });
+
   it('finds script meta and run json under a different project dir for the same session', async () => {
     const fx = fresh('otherproj');
     const run = 'wf_moved-003';

@@ -75,6 +75,8 @@ const MAIN_REPEEK_MS = 60 * 1000;
 /** 실행 결과 json은 script·result 본문까지 들어 있어 커요 — 이보다 크면 읽지 않아요 */
 const RUN_JSON_MAX = 16 * 1024 * 1024;
 /** 본 세션 transcript(수백 MB일 수 있어요)를 처음 읽을 때 끝에서 이만큼만 — 그보다 앞서 시작해 아직 도는 명령은 놓쳐요 */
+/** 실행 결과 json보다 이만큼 넘게 나중에 journal이 쓰였으면 같은 runId로 다시 돌린 것(끝날 때의 마지막 쓰기는 1초 안 — 실측 최대 0.9초) */
+export const RESUMED_SLACK_MS = 5000;
 export const RUNS_TAIL_BYTES = 4 * 1024 * 1024;
 const SESSION_JSONL = /^([0-9A-Za-z-]{8,128})\.jsonl$/;
 
@@ -628,7 +630,11 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
   }
 
   /** 실행 결과 json(끝난 워크플로우에만 있어요). candidates는 아직 없을 때 생길 자리(서명에 넣어요) */
-  async function runResult(info: SessionDirInfo, runId: string, ctx: PassCtx): Promise<{ info: WorkflowRunInfo | null; candidates: string[] }> {
+  async function runResult(
+    info: SessionDirInfo,
+    runId: string,
+    ctx: PassCtx,
+  ): Promise<{ info: WorkflowRunInfo | null; candidates: string[]; /** 실행 결과 json이 쓰인 시각 */ mtimeMs?: number }> {
     const ref = runRef(info, runId, ctx.t);
     const candidates = workflowDirs(info, ctx).map((wd) => join(wd, `${runId}.json`));
     let found: { file: string; s: FileStamp } | undefined;
@@ -649,7 +655,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     if (!found) return { info: null, candidates };
     const { file, s } = found;
     const c = runs.get(file);
-    if (c && c.mtimeMs === s.mtimeMs && c.size === s.size) return { info: touch(c, ctx.t).info, candidates };
+    if (c && c.mtimeMs === s.mtimeMs && c.size === s.size) return { info: touch(c, ctx.t).info, candidates, mtimeMs: s.mtimeMs };
     let parsed: WorkflowRunInfo | null = null;
     if (s.size <= RUN_JSON_MAX) {
       try {
@@ -660,7 +666,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
       }
     }
     runs.set(file, { ...s, info: parsed, seen: ctx.t, pass });
-    return { info: parsed, candidates };
+    return { info: parsed, candidates, mtimeMs: s.mtimeMs };
   }
 
   async function scriptMeta(info: SessionDirInfo, runId: string, ctx: PassCtx): Promise<WorkflowScriptMeta | null> {
@@ -833,10 +839,22 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     // 재시도로 밀려난 앞선 시도의 파일은 끝나지 않은 agent로 되살리지 않아요
     for (const id of fileIds.keys()) if (!byAgent.has(id) && !journal?.superseded.has(id)) ids.push(id);
 
-    // 실행 결과 json이 있으면 워크플로우는 끝났어요 — completed는 done, killed·failed는 failed
+    // 실행 결과 json이 있으면 워크플로우는 끝났어요 — completed는 done, killed·failed는 failed.
+    // 다만 같은 runId로 다시 돌리면(resume) 앞선 실행의 결과 json이 그대로 남아요 — 그 뒤에 **journal**이 움직였으면
+    // 그 결과는 지난 실행 것이라 버려요(새 실행이 끝나면 결과 json이 다시 쓰여요). 안 그러면 돌고 있는 워크플로우가 «끝남»으로 보여요.
+    // journal은 워크플로우 런타임만 쓰고(launched·started·result·failed) 다시 돌리면 새 started가 반드시 붙어요. agent 파일 시각은
+    // 쓰지 않아요 — kill된 실행은 돌던 도구의 결과가 결과 json보다 수십 초\~몇 시간 뒤에 transcript에 붙을 수 있어서요
+    // (실제 720개 실행: journal 기준 오탐 0·놓침 0, agent 파일까지 보면 오탐 2).
     const run = await runResult(info, runId, ctx);
-    const ri = run.info;
+    let lastActivity = jStat?.mtimeMs ?? 0;
+    for (const s of fileIds.values()) if (s.mtimeMs > lastActivity) lastActivity = s.mtimeMs;
+    const resumed = run.info !== null && run.mtimeMs !== undefined && (jStat?.mtimeMs ?? 0) > run.mtimeMs + RESUMED_SLACK_MS;
+    const ri = resumed ? null : run.info;
     const runOutcome: 'done' | 'failed' | undefined = ri?.status === 'completed' ? 'done' : ri?.status ? 'failed' : undefined;
+    // 버려진 시도의 agent: 지금(마지막) 시도가 시작하기 전에 시작했고 journal 결과도 없는 것 — 프롬프트가 바뀌어 다시 불리지 않았거나
+    // kill·한도로 끊긴 것. 같은 key로 다시 불린 것은 superseded로 이미 빠져요. 목록·진행률·단계 수에 넣지 않아요(지금 시도의 모양만).
+    // 기준 시각: 다시 도는 중이면 앞선 결과 json이 쓰인 때, 끝난 뒤면 결과 json의 startTime(마지막 시도의 시작).
+    const attemptStart = resumed ? run.mtimeMs! : (ri?.startTimeMs ?? 0);
 
     const agents: BackgroundAgent[] = [];
     const tokens = zeroTokens();
@@ -848,6 +866,9 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
       const file = s ? await agentState(path, s, t) : undefined;
       if (file?.cwd && !cwdOut.cwd) cwdOut.cwd = file.cwd;
       const { meta } = await readMeta(join(wfDir, `agent-${id}.meta.json`), t);
+      // agent가 속한 시도는 «마지막 쓰기»가 아니라 «시작»(첫 기록)으로 갈라요 — 끊긴 뒤 늦게 붙는 도구 결과에 속지 않게
+      const startedMs = file?.firstTs ? Date.parse(file.firstTs) : s?.mtimeMs;
+      if (attemptStart > 0 && startedMs !== undefined && startedMs < attemptStart && !byAgent.get(id)?.outcome && meta?.finished !== true) continue;
       const a = buildAgent(id, file, meta, byAgent.get(id), s?.mtimeMs ?? fallbackMtime, t, runOutcome);
       if (a.status === 'running' || a.status === 'stale') {
         if (s) hotOut.push(path);
@@ -866,8 +887,13 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     else if (running) status = 'running';
     else if (unresolved > 0) status = 'stale';
     else if (agents.length === 0) status = liveness(baseMtime, t);
+    // 다시 도는 실행은 결과 json이 새로 쓰이기 전까지 안 끝났어요 — 시작한 agent가 다 끝난 단계 사이에도 «끝남»이 아니에요
+    else if (resumed) status = liveness(Math.max(baseMtime, lastActivity), t);
     else status = agents.some((a) => a.status === 'failed') ? 'failed' : 'done';
-    if (status === 'running' || status === 'stale') {
+    // 지금 실행의 결과 json이 아직 없으면(첫 실행·다시 돌림) 움직임이 있는 동안은 서명에 남겨요 — 단계 사이(마지막 result와 다음 started
+    // 사이, 한도 대기·분류기 호출로 몇 초\~몇 분)에 «끝남»으로 빠지면 다음 단계가 시작해도 서명이 못 알아채요
+    const pending = (run.info === null || resumed) && liveness(Math.max(baseMtime, lastActivity), t) === 'running';
+    if (status === 'running' || status === 'stale' || pending) {
       hotOut.push(wfDir);
       if (jStat) hotOut.push(journalFile);
       // 끝나면 실행 결과 json이 생겨요 — 생기는 순간을 서명이 알아채게
@@ -875,7 +901,8 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
     }
 
     const sm = await scriptMeta(info, runId, ctx);
-    const phaseTitles = [...(sm?.phases.length ? sm.phases : (ri?.phases ?? []))];
+    // 이름·단계 제목은 다시 도는 동안에도 앞선 결과 json 것을 써요(스크립트 사본이 없는 실행은 이름을 얻을 다른 곳이 없어요)
+    const phaseTitles = [...(sm?.phases.length ? sm.phases : (run.info?.phases ?? []))];
     for (const a of agents) if (a.phase && !phaseTitles.includes(a.phase)) phaseTitles.push(a.phase);
     const phases = phaseTitles.map((title) => {
       const inPhase = agents.filter((a) => a.phase === title);
@@ -902,7 +929,7 @@ export function createClaudeTaskCollector(opts: ClaudeTaskOptions = {}): TaskCol
       progress: { done, total },
       tokens,
     };
-    const name = sm?.name ?? ri?.workflowName;
+    const name = sm?.name ?? run.info?.workflowName;
     if (name) wf.name = name;
     if (sm?.description) wf.description = sm.description;
     if (startedAt) wf.startedAt = startedAt;

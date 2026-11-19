@@ -40,6 +40,12 @@ export type TasksPane = 'tasks' | 'runs';
 export const AGENT_KIND_CONTEXT = 'mark42.agentKind';
 /** state.changed가 몰려도 1초에 한 번만 다시 읽어요 */
 const THROTTLE_MS = 1000;
+/**
+ * 불러오기에 실패했을 때: 데몬이 잠깐 바빠 한 번 놓친 것(시간 초과)으로는 화면을 비우지 않아요 — 방금 목록을 그대로 두고 곧 다시 읽어요.
+ * 이어서 KEEP_FAILURES번 넘게 실패하면 옛 «실행 중»을 붙들고 있지 않게 비우고 알려요. 다시 읽기는 RETRY_MS 간격으로 그 수만큼만
+ * (그 뒤로는 데몬의 바뀜 알림·다시 연결을 기다려요). 시험에서 줄여 써요.
+ */
+export const TASKS_VIEW_TUNING = { keepFailures: 1, retryMs: [2000, 5000, 15_000] as readonly number[] };
 /** 실행 중이고 보기가 보이면 걸린 시간을 이 간격으로 다시 그려요 */
 const TICK_MS = 5000;
 
@@ -67,6 +73,11 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
   #again = false;
   #lastLoad = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  /** 이어진 불러오기 실패 수와 다시 읽기 타이머 */
+  #failures = 0;
+  #retry: ReturnType<typeof setTimeout> | undefined;
+  /** 연결 세대 — 끊길 때마다 올라가요(끊기며 거절된 요청을 «불러오기 실패»로 세지 않게) */
+  #epoch = 0;
   #tick: ReturnType<typeof setInterval> | undefined;
   /** 마지막으로 setContext한 에이전트(null = 아직 안 함) */
   #ctxAgent: AgentKind | '' | null = null;
@@ -92,6 +103,17 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
       ...[...Object.values(TASKS_VIEW_IDS), ...RUNS_VIEW_SET].map((id) => vscode.window.registerWebviewViewProvider(id, this)),
       // 끊기면 바로 실행 중 표시를 거두고, 붙으면 다시 읽어요
       o.daemon.onStateChange(() => {
+        // 끊긴 사이의 목록은 버려요 — 다시 붙은 뒤 첫 불러오기가 실패해도 끊기기 전 «실행 중»이 되살아나지 않게
+        if (!o.daemon.api) {
+          this.#data = undefined;
+          this.#loaded = false;
+          this.#failures = 0;
+          // 다시 붙으면 «불러오는 중»부터 — 끊기기 전의 오류 문구·다시 읽기 타이머를 들고 가지 않아요
+          this.#error = false;
+          this.#epoch++;
+          if (this.#retry) clearTimeout(this.#retry);
+          this.#retry = undefined;
+        }
         this.#render();
         this.refresh();
       }),
@@ -148,6 +170,7 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
       this.#data = undefined;
       this.#loaded = false;
       this.#error = false;
+      this.#failures = 0;
     }
     if (!agent || !api || !sessionId) {
       // 연결이 끊기면 실행 중 표시가 남지 않게 비워요
@@ -157,6 +180,7 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
       return;
     }
     if (!this.#loaded) this.#render();
+    const epoch = this.#epoch;
     try {
       const list = await api.request('tasks.list', { sessionId, agent, include: ['cliRuns'] });
       if (this.#disposed) return;
@@ -166,16 +190,33 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
         this.#data = Array.isArray(list) ? list.find((t) => t?.sessionId === sessionId) : undefined;
         this.#loaded = true;
         this.#error = false;
+        this.#failures = 0;
       }
     } catch (e) {
       if (this.#disposed) return;
       this.#log.warn(`tasks view load failed: ${e instanceof Error ? e.message : String(e)}`);
-      // 옛 «실행 중»을 붙들고 있지 않게 비워요
-      this.#data = undefined;
-      this.#loaded = false;
-      this.#error = true;
+      // 요청을 보낸 연결이 끊겨 거절된 것은 실패가 아니에요 — 다시 붙으면 상태 리스너가 다시 읽어요
+      if (epoch !== this.#epoch) return;
+      this.#failures++;
+      // 한 번 놓친 것으로는 방금 목록을 그대로 둬요. 보여 줄 목록이 없거나 이어서 실패하면 옛 «실행 중»을 붙들지 않게 비우고 알려요
+      if (!this.#loaded || this.#failures > TASKS_VIEW_TUNING.keepFailures) {
+        this.#data = undefined;
+        this.#loaded = false;
+        this.#error = true;
+      }
+      this.#retryLater();
     }
     this.#render();
+  }
+
+  /** 실패 뒤 다시 읽기 — 데몬의 바뀜 알림이 없어도 스스로 돌아오게(정해진 횟수만) */
+  #retryLater(): void {
+    const wait = TASKS_VIEW_TUNING.retryMs[this.#failures - 1];
+    if (wait === undefined || this.#retry || this.#disposed) return;
+    this.#retry = setTimeout(() => {
+      this.#retry = undefined;
+      if (!this.#disposed && this.#failures > 0) void this.reload();
+    }, wait);
   }
 
   /** 에이전트 종류 컨텍스트 키(보기 when)를 맞춰요 */
@@ -332,6 +373,7 @@ export class TasksMonitor implements vscode.WebviewViewProvider, vscode.Disposab
   dispose(): void {
     this.#disposed = true;
     if (this.#timer) clearTimeout(this.#timer);
+    if (this.#retry) clearTimeout(this.#retry);
     if (this.#tick) clearInterval(this.#tick);
     for (const t of this.#fitTimers.values()) clearTimeout(t);
     this.#fitTimers.clear();

@@ -185,6 +185,121 @@ describe('codex sqlite listing', () => {
   });
 });
 
+describe('codex sqlite listing — long prompts and the indexer cache', () => {
+  it('reads only the head of title/preview (codex exec stores the whole prompt there)', () => {
+    const p = join(tmp.dir, 'long.sqlite');
+    const db = new DatabaseSync(p);
+    db.exec('CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, preview TEXT, name TEXT, archived INTEGER, recency_at_ms INTEGER)');
+    const long = `Review   the\n\tplan ${'x'.repeat(50_000)} TAIL-MARKER`;
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)').run('L', 'C:\\x', long, long, null, 0, T);
+    db.close();
+    const [t] = listCodexThreadsFromSqlite(p);
+    assert.equal(t!.title!.length, 200);
+    assert.ok(t!.title!.startsWith('Review the plan xxx'), 'whitespace collapsed, head kept');
+    assert.ok(!JSON.stringify(t).includes('TAIL-MARKER'));
+  });
+
+  it('the indexer reads the db again only when it changed, and answers with the last list when a read fails', async () => {
+    const h = join(tmp.dir, 'codex-cache');
+    mkdirSync(h, { recursive: true });
+    const file = join(h, 'state_5.sqlite');
+    const make = (ids: string[]) => {
+      const db = new DatabaseSync(file);
+      db.exec('DROP TABLE IF EXISTS threads; CREATE TABLE threads (id TEXT, cwd TEXT, title TEXT, source TEXT, archived INTEGER, recency_at_ms INTEGER)');
+      const ins = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?)');
+      ids.forEach((id, i) => ins.run(id, i % 2 ? 'C:\\b' : 'C:\\a', `t-${id}`, id.startsWith('sub') ? JSON.stringify({ subagent: { other: 'x' } }) : 'exec', 0, T - i));
+      db.close();
+    };
+    const stamp = (sec: number) => utimesSync(file, sec, sec);
+    make(['one', 'two', 'sub1']);
+    stamp(1_792_000_000);
+    const logs: string[] = [];
+    const idx = createCodexIndexer({ codexHome: h, mode: 'sqlite', log: (m) => logs.push(m) });
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['one', 'two']);
+    // 한 번 읽은 목록으로 폴더별·서브에이전트 요청에 답해요(통합 창은 폴더마다 물어요)
+    assert.deepEqual((await idx.list({ cwd: 'c:\\A\\', includeSubagents: true })).map((x) => x.id), ['one', 'sub1']);
+    assert.deepEqual((await idx.list({ cwd: 'C:\\b' })).map((x) => x.id), ['two']);
+    assert.equal((await idx.list({ limit: 1 })).length, 1);
+
+    // 파일 내용은 못 읽게 됐지만 크기·시각이 그대로면 다시 읽지 않아요 → 같은 목록
+    const good = readFileSync(file);
+    writeFileSync(file, Buffer.alloc(good.length, 0x41));
+    stamp(1_792_000_000);
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['one', 'two'], 'unchanged signature: no re-read');
+    assert.equal(logs.length, 0);
+
+    // 바뀌었는데 읽기에 실패하면(쓰는 중 잠김 등) 방금 목록으로 답하고 알려요
+    stamp(1_792_000_100);
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['one', 'two']);
+    assert.ok(logs.some((m) => m.includes('using the last one')), logs.join('|'));
+
+    // 다시 읽을 수 있게 되면 새 목록
+    writeFileSync(file, good); // 깨뜨려 둔 파일을 되돌린 뒤 새 내용으로
+    make(['three']);
+    stamp(1_792_000_200);
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['three']);
+    await idx.stop();
+  });
+
+  it('concurrent live() calls of one refresh share a single scan; repeated read failures stop serving the old list', async () => {
+    const h = join(tmp.dir, 'codex-live-concurrent');
+    mkdirSync(h, { recursive: true });
+    const rollout = join(h, 'r.jsonl');
+    writeFileSync(rollout, '{}\n');
+    const file = join(h, 'state_5.sqlite');
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, title TEXT, rollout_path TEXT, archived INTEGER, updated_at_ms INTEGER)');
+    const ins = db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?)');
+    ins.run('a', 'C:\\w', 'A', rollout, 0, 2);
+    ins.run('b', 'C:\\w', 'B', join(h, 'gone.jsonl'), 0, 1);
+    db.close();
+    const t = Date.now();
+    let scans = 0;
+    const logs: string[] = [];
+    const idx = createCodexIndexer({ codexHome: h, mode: 'sqlite', bootTime: () => (scans++, t - 60_000), now: () => t, log: (m) => logs.push(m) });
+    // 통합 창은 폴더 수만큼 sessions.list를 한꺼번에 보내요 — live()는 첫 질의의 stat을 기다리는 사이에 또 불려요
+    const all = await Promise.all([idx.live(), idx.live(), idx.live(), idx.live(), idx.live()]);
+    assert.equal(scans, 1, 'one scan for five concurrent calls');
+    for (const l of all) assert.deepEqual(l.map((x) => x.sessionId), ['a']);
+    all[0]![0]!.status = 'idle';
+    assert.equal((await idx.live())[0]!.status, 'busy', 'callers get their own copies');
+
+    // 목록: 한 번 실패는 방금 목록, 이어서 세 번째 실패부터는 오류(옛 목록을 끝없이 내지 않아요)
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['a', 'b']);
+    const good = readFileSync(file);
+    writeFileSync(file, Buffer.alloc(good.length + 1, 0x41));
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['a', 'b']);
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['a', 'b']);
+    await assert.rejects(idx.list({}), 'third failure in a row');
+    assert.equal(logs.filter((m) => m.includes('using the last one')).length, 2);
+    // 다시 읽을 수 있게 되면 돌아와요
+    writeFileSync(file, good);
+    assert.deepEqual((await idx.list({})).map((x) => x.id), ['a', 'b']);
+    await idx.stop();
+  });
+
+  it('live() reuses its recent-rollout answer for a moment (one refresh asks per folder)', async () => {
+    const h = join(tmp.dir, 'codex-live-cache');
+    mkdirSync(h, { recursive: true });
+    const rollout = join(h, 'r.jsonl');
+    writeFileSync(rollout, '{}\n');
+    const db = new DatabaseSync(join(h, 'state_5.sqlite'));
+    db.exec('CREATE TABLE threads (id TEXT, cwd TEXT, rollout_path TEXT, archived INTEGER, updated_at_ms INTEGER)');
+    db.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?)').run('a', 'C:\\w', rollout, 0, 1);
+    db.close();
+    let t = Date.now();
+    const idx = createCodexIndexer({ codexHome: h, bootTime: () => t - 60_000, now: () => t });
+    assert.equal((await idx.live()).length, 1);
+    // rollout이 사라져도 잠깐은 같은 답, liveCacheMs가 지나면 다시 확인
+    utimesSync(rollout, (t - 60 * 60_000) / 1000, (t - 60 * 60_000) / 1000);
+    t += 500;
+    assert.equal((await idx.live()).length, 1, 'within the cache window');
+    t += CODEX_TUNING.liveCacheMs + 1;
+    assert.equal((await idx.live()).length, 0, 'checked again');
+    await idx.stop();
+  });
+});
+
 describe('codex indexer', () => {
   it('sqlite mode never spawns', async () => {
     const idx = createCodexIndexer({ codexHome: home, mode: 'sqlite', codexBin: join(tmp.dir, 'must-not-run.exe') });
